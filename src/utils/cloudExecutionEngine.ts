@@ -1,0 +1,1859 @@
+import {
+  ExecutionEngine,
+  ExecutionContext,
+  ExecutionResult,
+  ExecutionLog,
+  WorkflowDefinition,
+  AdvancedNodeData,
+  AdvancedNodeType,
+  VectorMemory,
+  NodeConfig,
+  MemorySystem as MemorySystemType,
+  ToolRegistry as ToolRegistryType,
+  PromptEngineering as PromptEngineeringType,
+} from "./executionEngine";
+import { supabase } from "./supabaseClient";
+import { SupabaseMemorySystem } from "./memorySystem";
+import { SupabaseToolRegistry } from "./toolRegistry";
+import {
+  executionStore,
+  createObservableLogger,
+  NodeStatus,
+} from "./observability";
+
+export class CloudExecutionEngine implements ExecutionEngine {
+  private memorySystem: MemorySystemType;
+  private toolRegistry: ToolRegistryType;
+  private promptEngineering: PromptEngineeringType;
+
+  constructor(
+    memorySystem: MemorySystemType,
+    toolRegistry: ToolRegistryType,
+    promptEngineering: PromptEngineeringType,
+  ) {
+    this.memorySystem = memorySystem;
+    this.toolRegistry = toolRegistry;
+    this.promptEngineering = promptEngineering;
+  }
+
+  async execute(
+    workflow: WorkflowDefinition,
+    context: Partial<ExecutionContext>,
+  ): Promise<ExecutionResult> {
+    const executionId = `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const startTime = new Date();
+
+    // Create execution status in store
+    const executionStatus = executionStore.createExecution(
+      executionId,
+      workflow.id,
+    );
+
+    // Create observable logger
+    const logger = createObservableLogger(executionId, workflow.id);
+
+    const fullContext: ExecutionContext = {
+      workflowId: workflow.id,
+      executionId,
+      userId: context.userId || "anonymous",
+      variables: context.variables || {},
+      apiKeys: context.apiKeys || {},
+      memory: {
+        shortTerm: {},
+        longTerm: [],
+      },
+      logs: [],
+      startTime,
+      status: "running",
+    };
+
+    // Update execution status
+    logger.updateExecutionStatus({
+      status: "running",
+      progress: 0,
+    });
+
+    try {
+      // Validate workflow
+      const validation = await this.validate(workflow);
+      if (!validation.valid) {
+        throw new Error(
+          `Workflow validation failed: ${validation.errors.join(", ")}`,
+        );
+      }
+
+      // Store execution start
+      await this.storeExecutionStart(fullContext);
+
+      // Initialize node statuses
+      workflow.nodes.forEach((node) => {
+        logger.updateNodeStatus(node.id, {
+          nodeId: node.id,
+          type: node.type,
+          label: node.label || node.id,
+          status: NodeStatus.PENDING,
+          progress: 0,
+        });
+      });
+
+      // Execute workflow
+      const result = await this.executeWorkflow(workflow, fullContext, logger);
+
+      // Store execution result
+      await this.storeExecutionResult(result);
+
+      // Update final status
+      logger.updateExecutionStatus({
+        status: "completed",
+        progress: 100,
+        endTime: result.endTime,
+        duration: result.duration,
+        metrics: result.metrics,
+      });
+
+      return result;
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+
+      logger.addError(errorMessage);
+      logger.updateExecutionStatus({
+        status: "failed",
+      });
+
+      const errorResult: ExecutionResult = {
+        success: false,
+        executionTime: Date.now() - startTime.getTime(),
+        nodeResults: {},
+        executionId,
+        status: "failed",
+        endTime: new Date(),
+        duration: Date.now() - startTime.getTime(),
+        output: {},
+        logs: fullContext.logs,
+        errors: [errorMessage],
+        metrics: {
+          nodesExecuted: 0,
+          totalExecutionTime: Date.now() - startTime.getTime(),
+          memoryUsed: 0,
+          apiCalls: 0,
+          retries: 0,
+        },
+      };
+
+      await this.storeExecutionResult(errorResult);
+      return errorResult;
+    }
+  }
+
+  private async executeWorkflow(
+    workflow: WorkflowDefinition,
+    context: ExecutionContext,
+    logger: ReturnType<typeof createObservableLogger>,
+  ): Promise<ExecutionResult> {
+    const nodeMap = new Map(workflow.nodes.map((node) => [node.id, node]));
+    const executedNodes = new Set<string>();
+    const pendingNodes = new Set(workflow.nodes.map((node) => node.id));
+    const executingNodes = new Set<string>();
+    const nodeResults = new Map<string, any>();
+    const nodeErrors = new Map<string, Error>();
+
+    // Build dependency graph
+    const dependencyGraph = this.buildDependencyGraph(
+      workflow.nodes,
+      workflow.edges,
+    );
+    const reverseDependencyGraph = this.buildReverseDependencyGraph(
+      workflow.nodes,
+      workflow.edges,
+    );
+
+    // Find nodes with no dependencies (starting nodes)
+    const readyNodes = workflow.nodes
+      .filter((node) => dependencyGraph.get(node.id)?.size === 0)
+      .map((node) => node.id);
+
+    const parallelExecution =
+      workflow.settings?.allowParallelExecution !== false;
+
+    while (pendingNodes.size > 0 || executingNodes.size > 0) {
+      // Execute ready nodes (parallel if enabled)
+      if (readyNodes.length > 0) {
+        const nodesToExecute = readyNodes.splice(0); // Take all ready nodes
+
+        if (parallelExecution && nodesToExecute.length > 1) {
+          // Execute nodes in parallel
+          const executionPromises = nodesToExecute.map((nodeId) =>
+            this.executeNodeWithTimeout(
+              nodeMap.get(nodeId)!,
+              context,
+              nodeResults,
+              logger,
+            )
+              .then((result) => ({ nodeId, result, success: true }))
+              .catch((error) => ({ nodeId, error, success: false })),
+          );
+
+          const results = await Promise.allSettled(executionPromises);
+
+          for (const result of results) {
+            if (result.status === "fulfilled") {
+              const value = result.value;
+              if ("result" in value) {
+                await this.handleNodeSuccess(
+                  value.nodeId,
+                  value.result,
+                  nodeMap,
+                  executedNodes,
+                  pendingNodes,
+                  executingNodes,
+                  nodeResults,
+                  reverseDependencyGraph,
+                  dependencyGraph,
+                  readyNodes,
+                  context,
+                  logger,
+                );
+              } else {
+                await this.handleNodeError(
+                  value.nodeId,
+                  value.error,
+                  nodeMap,
+                  executedNodes,
+                  pendingNodes,
+                  executingNodes,
+                  nodeErrors,
+                  reverseDependencyGraph,
+                  context,
+                  logger,
+                );
+              }
+            } else {
+              // Promise rejection - this shouldn't happen with our error handling
+              console.error("Unexpected promise rejection:", result.reason);
+            }
+          }
+        } else {
+          // Execute nodes sequentially
+          for (const nodeId of nodesToExecute) {
+            try {
+              const result = await this.executeNodeWithTimeout(
+                nodeMap.get(nodeId)!,
+                context,
+                nodeResults,
+                logger,
+              );
+              await this.handleNodeSuccess(
+                nodeId,
+                result,
+                nodeMap,
+                executedNodes,
+                pendingNodes,
+                executingNodes,
+                nodeResults,
+                reverseDependencyGraph,
+                dependencyGraph,
+                readyNodes,
+                context,
+                logger,
+              );
+            } catch (error) {
+              await this.handleNodeError(
+                nodeId,
+                error instanceof Error ? error : new Error(String(error)),
+                nodeMap,
+                executedNodes,
+                pendingNodes,
+                executingNodes,
+                nodeErrors,
+                reverseDependencyGraph,
+                context,
+                logger,
+              );
+            }
+          }
+        }
+      }
+
+      // Check for workflow-level timeout
+      if (
+        Date.now() - context.startTime.getTime() >
+        (workflow.settings?.maxExecutionTime || 300000)
+      ) {
+        throw new Error(
+          `Workflow execution timeout after ${workflow.settings?.maxExecutionTime || 300000}ms`,
+        );
+      }
+
+      // If no nodes are ready and some are still pending, check for deadlocks
+      if (
+        readyNodes.length === 0 &&
+        pendingNodes.size > 0 &&
+        executingNodes.size === 0
+      ) {
+        const remainingNodes = Array.from(pendingNodes);
+        const deadlockDetected = remainingNodes.every((nodeId) => {
+          const deps = dependencyGraph.get(nodeId) || new Set();
+          return Array.from(deps).some(
+            (depId) => nodeErrors.has(depId) || !executedNodes.has(depId),
+          );
+        });
+
+        if (deadlockDetected) {
+          throw new Error(
+            `Workflow deadlock detected. Failed nodes: ${Array.from(nodeErrors.keys()).join(", ")}`,
+          );
+        }
+
+        // Wait a bit before checking again
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+
+    const endTime = new Date();
+    const duration = endTime.getTime() - context.startTime.getTime();
+
+    // Collect all errors
+    const allErrors = Array.from(nodeErrors.entries()).map(
+      ([nodeId, error]) => `${nodeId}: ${error.message}`,
+    );
+
+    return {
+      success: nodeErrors.size === 0,
+      executionTime: duration,
+      nodeResults: Object.fromEntries(nodeResults),
+      executionId: context.executionId,
+      status: nodeErrors.size > 0 ? "failed" : "success",
+      endTime,
+      duration,
+      output: Object.fromEntries(nodeResults),
+      logs: context.logs,
+      errors: allErrors,
+      metrics: {
+        nodesExecuted: executedNodes.size,
+        totalExecutionTime: duration,
+        memoryUsed: this.calculateMemoryUsage(context),
+        apiCalls: this.countApiCalls(context.logs),
+        retries: workflow.nodes.reduce(
+          (sum, node) => sum + (node.retryCount || 0),
+          0,
+        ),
+      },
+    };
+  }
+
+  private buildDependencyGraph(
+    nodes: AdvancedNodeData[],
+    edges: WorkflowDefinition["edges"],
+  ): Map<string, Set<string>> {
+    const graph = new Map<string, Set<string>>();
+    nodes.forEach((node) => graph.set(node.id, new Set()));
+
+    edges.forEach((edge) => {
+      const targetDeps = graph.get(edge.target) || new Set();
+      targetDeps.add(edge.source);
+      graph.set(edge.target, targetDeps);
+    });
+
+    return graph;
+  }
+
+  private buildReverseDependencyGraph(
+    nodes: AdvancedNodeData[],
+    edges: WorkflowDefinition["edges"],
+  ): Map<string, Set<string>> {
+    const graph = new Map<string, Set<string>>();
+    nodes.forEach((node) => graph.set(node.id, new Set()));
+
+    edges.forEach((edge) => {
+      const sourceDeps = graph.get(edge.source) || new Set();
+      sourceDeps.add(edge.target);
+      graph.set(edge.source, sourceDeps);
+    });
+
+    return graph;
+  }
+
+  private async executeNodeWithTimeout(
+    node: AdvancedNodeData,
+    context: ExecutionContext,
+    nodeResults: Map<string, any>,
+    logger: ReturnType<typeof createObservableLogger>,
+  ): Promise<any> {
+    const timeout = node.config.timeout || 30000; // Default 30 seconds
+
+    return Promise.race([
+      this.executeNodeWithRetry(node, context, nodeResults, logger),
+      new Promise((_, reject) =>
+        setTimeout(
+          () =>
+            reject(
+              new Error(`Node ${node.id} execution timeout after ${timeout}ms`),
+            ),
+          timeout,
+        ),
+      ),
+    ]);
+  }
+
+  private async executeNodeWithRetry(
+    node: AdvancedNodeData,
+    context: ExecutionContext,
+    nodeResults: Map<string, any>,
+    logger: ReturnType<typeof createObservableLogger>,
+  ): Promise<any> {
+    const retryConfig = node.config.retryConfig || {
+      maxRetries: 0,
+      backoffMultiplier: 2,
+      maxBackoff: 30000,
+    };
+    let lastError: Error;
+
+    for (let attempt = 0; attempt <= retryConfig.maxRetries; attempt++) {
+      try {
+        node.executionState = "running";
+        const startTime = Date.now();
+
+        const result = await this.executeNode(node, context, nodeResults);
+
+        node.executionState = "completed";
+        node.executionResult = result;
+        node.executionTime = Date.now() - startTime;
+        node.retryCount = attempt;
+
+        logger.log(
+          node.id,
+          "info",
+          `Node executed successfully in ${node.executionTime}ms (attempt ${attempt + 1})`,
+        );
+        return result;
+      } catch (error) {
+        lastError = error as Error;
+        node.executionState = "failed";
+
+        logger.log(
+          node.id,
+          "warn",
+          `Node execution failed (attempt ${attempt + 1}/${retryConfig.maxRetries + 1}): ${(error as Error).message}`,
+        );
+
+        if (attempt < retryConfig.maxRetries) {
+          const backoffTime = Math.min(
+            retryConfig.backoffMultiplier ** attempt * 1000,
+            retryConfig.maxBackoff,
+          );
+          logger.log(node.id, "info", `Retrying in ${backoffTime}ms`);
+          await new Promise((resolve) => setTimeout(resolve, backoffTime));
+        }
+      }
+    }
+
+    throw lastError!;
+  }
+
+  private async handleNodeSuccess(
+    nodeId: string,
+    result: any,
+    nodeMap: Map<string, AdvancedNodeData>,
+    executedNodes: Set<string>,
+    pendingNodes: Set<string>,
+    executingNodes: Set<string>,
+    nodeResults: Map<string, any>,
+    reverseDependencyGraph: Map<string, Set<string>>,
+    dependencyGraph: Map<string, Set<string>>,
+    readyNodes: string[],
+    context: ExecutionContext,
+    logger: ReturnType<typeof createObservableLogger>,
+  ) {
+    nodeResults.set(nodeId, result);
+    executedNodes.add(nodeId);
+    pendingNodes.delete(nodeId);
+    executingNodes.delete(nodeId);
+
+    // Update node status to completed
+    const node = nodeMap.get(nodeId);
+    logger.updateNodeStatus(nodeId, {
+      status: NodeStatus.COMPLETED,
+      progress: 100,
+      endTime: new Date(),
+    });
+
+    // Find nodes that now have all dependencies satisfied
+    const dependentNodes = reverseDependencyGraph.get(nodeId) || new Set();
+    for (const depNodeId of dependentNodes) {
+      if (
+        !executedNodes.has(depNodeId) &&
+        !executingNodes.has(depNodeId) &&
+        pendingNodes.has(depNodeId)
+      ) {
+        const nodeDependencies = dependencyGraph.get(depNodeId) || new Set();
+        const allDepsExecuted = Array.from(nodeDependencies).every((depId) =>
+          executedNodes.has(depId),
+        );
+
+        if (allDepsExecuted && !readyNodes.includes(depNodeId)) {
+          readyNodes.push(depNodeId);
+        }
+      }
+    }
+  }
+
+  private async handleNodeError(
+    nodeId: string,
+    error: Error,
+    nodeMap: Map<string, AdvancedNodeData>,
+    executedNodes: Set<string>,
+    pendingNodes: Set<string>,
+    executingNodes: Set<string>,
+    nodeErrors: Map<string, Error>,
+    reverseDependencyGraph: Map<string, Set<string>>,
+    context: ExecutionContext,
+    logger: ReturnType<typeof createObservableLogger>,
+  ) {
+    nodeErrors.set(nodeId, error);
+    pendingNodes.delete(nodeId);
+    executingNodes.delete(nodeId);
+
+    // Update node status to failed
+    logger.updateNodeStatus(nodeId, {
+      status: NodeStatus.FAILED,
+      endTime: new Date(),
+      error: error.message,
+    });
+
+    logger.log(nodeId, "error", `Node execution failed: ${error.message}`);
+
+    // Mark dependent nodes as failed due to dependency failure
+    const dependentNodes = reverseDependencyGraph.get(nodeId) || new Set();
+    for (const depNodeId of dependentNodes) {
+      if (!executedNodes.has(depNodeId) && !nodeErrors.has(depNodeId)) {
+        const depError = new Error(
+          `Dependency ${nodeId} failed: ${error.message}`,
+        );
+        nodeErrors.set(depNodeId, depError);
+        pendingNodes.delete(depNodeId);
+        executingNodes.delete(depNodeId);
+        this.log(
+          context,
+          depNodeId,
+          "error",
+          `Node failed due to dependency failure: ${depError.message}`,
+        );
+      }
+    }
+  }
+
+  private async executeNode(
+    node: AdvancedNodeData,
+    context: ExecutionContext,
+    nodeResults: Map<string, any>,
+  ): Promise<any> {
+    switch (node.type) {
+      case "ai-reasoning":
+        return await this.executeAIReasoningNode(node, context);
+
+      case "ai-memory":
+        return await this.executeMemoryNode(node, context);
+
+      case "ai-tool-calling":
+        return await this.executeToolCallingNode(node, context);
+
+      case "multi-agent-orchestrator":
+        return await this.executeMultiAgentNode(node, context);
+
+      case "conditional-branch":
+        return await this.executeConditionalNode(node, context, nodeResults);
+
+      case "loop-controller":
+        return await this.executeLoopNode(node, context, nodeResults);
+
+      case "human-approval":
+        return await this.executeApprovalNode(node, context);
+
+      case "action-api-call":
+        return await this.executeApiCallNode(node, context);
+
+      case "schedule-trigger":
+      case "event-trigger":
+        return await this.executeTriggerNode(node, context);
+
+      default:
+        return await this.executeGenericNode(node, context);
+    }
+  }
+
+  private async executeMultiAgentNode(
+    node: AdvancedNodeData,
+    context: ExecutionContext,
+  ): Promise<any> {
+    const config = node.config.multiAgent!;
+    const results = [];
+    const errors = [];
+
+    // Execute multiple agents in parallel or sequence
+    const executionPromises = config.agents.map(async (agentConfig: any) => {
+      try {
+        // Create sub-execution for each agent
+        const subExecutionId = `${context.executionId}_sub_${agentConfig.id}`;
+
+        // Load agent configuration
+        const { data: agent } = await supabase
+          .from("user_agents")
+          .select("*")
+          .eq("id", agentConfig.id)
+          .single();
+
+        if (!agent) {
+          throw new Error(`Agent ${agentConfig.id} not found`);
+        }
+
+        // Execute agent workflow using the external workflow engine
+        const { executeAgentWorkflow } =
+          await import("./externalWorkflowEngine");
+        const agentResult = await executeAgentWorkflow({
+          agentId: agentConfig.id,
+          userId: context.userId,
+          input: agentConfig.input || context.variables,
+          config: agent.config,
+          apiKeys: context.variables.apiKeys || {},
+          executionId: subExecutionId,
+        });
+
+        return {
+          agentId: agentConfig.id,
+          result: agentResult,
+          success: true,
+        };
+      } catch (error) {
+        errors.push({
+          agentId: agentConfig.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return {
+          agentId: agentConfig.id,
+          error: error instanceof Error ? error.message : String(error),
+          success: false,
+        };
+      }
+    });
+
+    let executionResults: any[];
+
+    if (config.executionMode === "parallel") {
+      const settledResults = await Promise.allSettled(executionPromises);
+      executionResults = settledResults.map((result) => {
+        if (result.status === "fulfilled") {
+          return result.value;
+        } else {
+          return { error: result.reason, success: false };
+        }
+      });
+    } else {
+      executionResults = await this.executeSequentially(executionPromises);
+    }
+
+    // Process results
+    for (const result of executionResults) {
+      if (result.success !== false && !result.error) {
+        results.push(result);
+      } else {
+        errors.push({
+          agentId: result.agentId || "unknown",
+          error:
+            result.error instanceof Error
+              ? result.error.message
+              : String(result.error),
+        });
+      }
+    }
+
+    // Apply aggregation strategy
+    let finalResult;
+    switch (config.aggregationStrategy) {
+      case "consensus":
+        finalResult = this.aggregateByConsensus(results);
+        break;
+      case "majority":
+        finalResult = this.aggregateByMajority(results);
+        break;
+      case "weighted":
+        finalResult = this.aggregateByWeighted(results, config.weights);
+        break;
+      default:
+        finalResult = results;
+    }
+
+    return {
+      results,
+      errors,
+      finalResult,
+      totalAgents: config.agents.length,
+      successCount: results.filter((r) => r.success).length,
+      errorCount: errors.length,
+    };
+  }
+
+  private async executeLoopNode(
+    node: AdvancedNodeData,
+    context: ExecutionContext,
+    nodeResults: Map<string, any>,
+  ): Promise<any> {
+    const config = node.config.loop!;
+    const iterations = [];
+    let loopCount = 0;
+    const maxIterations = config.maxIterations;
+
+    // For now, implement a simple loop that executes the next connected node
+    // In a real implementation, this would need workflow graph analysis
+    while (loopCount < maxIterations) {
+      loopCount++;
+
+      // Simple iteration - in practice, this would execute child nodes
+      const iterationResult = {
+        iteration: loopCount,
+        timestamp: new Date().toISOString(),
+        data: context.variables,
+      };
+
+      iterations.push(iterationResult);
+
+      // Check break condition if specified
+      if (config.breakCondition) {
+        // Simple evaluation - could be enhanced with expression evaluation
+        const shouldBreak = this.evaluateLoopCondition(
+          config.breakCondition,
+          iterationResult,
+        );
+        if (shouldBreak) break;
+      }
+
+      // Update loop variable if specified
+      if (config.loopVariable) {
+        context.variables[config.loopVariable] = loopCount;
+      }
+
+      // Update accumulator if specified
+      if (config.accumulator) {
+        context.variables[config.accumulator] = iterations;
+      }
+    }
+
+    return {
+      iterations,
+      totalIterations: loopCount,
+      maxIterations,
+      completed: loopCount < maxIterations,
+      finalVariables: context.variables,
+    };
+  }
+
+  private async executeApprovalNode(
+    node: AdvancedNodeData,
+    context: ExecutionContext,
+  ): Promise<any> {
+    const config = node.config.approval!;
+
+    // Store approval request in database
+    const { data: approvalRequest, error } = await supabase
+      .from("approval_requests")
+      .insert({
+        execution_id: context.executionId,
+        node_id: node.id,
+        workflow_id: context.workflowId,
+        user_id: context.userId,
+        request_data: {
+          title: "Approval Required",
+          description:
+            config.approvalMessage || "Please review and approve this action",
+          context: context.variables,
+          options: ["Approve", "Reject"],
+          approverRoles: config.approverRoles,
+          timeout: config.timeout || 3600000, // 1 hour default
+        },
+        status: "pending",
+        created_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to create approval request: ${error.message}`);
+    }
+
+    // Wait for approval (in a real implementation, this would use websockets or polling)
+    // For now, we'll simulate waiting with a timeout
+    const timeout = config.timeout || 3600000; // 1 hour
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeout) {
+      // Check for approval status
+      const { data: updatedRequest } = await supabase
+        .from("approval_requests")
+        .select("status, decision, approved_by, approved_at")
+        .eq("id", approvalRequest.id)
+        .single();
+
+      if (updatedRequest && updatedRequest.status !== "pending") {
+        return {
+          approved: updatedRequest.status === "approved",
+          decision: updatedRequest.decision,
+          approvedBy: updatedRequest.approved_by,
+          approvedAt: updatedRequest.approved_at,
+          waitTime: Date.now() - startTime,
+        };
+      }
+
+      // Wait before checking again
+      await new Promise((resolve) => setTimeout(resolve, 5000)); // Check every 5 seconds
+    }
+
+    // Timeout - auto-decide based on config
+    const autoDecision = config.autoApprove ? "approved" : "rejected";
+
+    await supabase
+      .from("approval_requests")
+      .update({
+        status: autoDecision,
+        decision: autoDecision,
+        approved_at: new Date().toISOString(),
+      })
+      .eq("id", approvalRequest.id);
+
+    return {
+      approved: autoDecision === "approved",
+      decision: autoDecision,
+      timeout: true,
+      waitTime: Date.now() - startTime,
+    };
+  }
+
+  private async executeTriggerNode(
+    node: AdvancedNodeData,
+    context: ExecutionContext,
+  ): Promise<any> {
+    const config = node.config.trigger!;
+
+    if (node.type === "schedule-trigger") {
+      // Schedule-based trigger
+      const { data: scheduledJob, error } = await supabase
+        .from("scheduled_jobs")
+        .insert({
+          workflow_id: context.workflowId,
+          node_id: node.id,
+          execution_id: context.executionId,
+          schedule_type: "cron",
+          schedule_config: { cron: config.schedule },
+          status: "scheduled",
+          next_run: this.calculateNextRun({
+            type: "cron",
+            cron: config.schedule,
+          }),
+          created_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (error) {
+        throw new Error(`Failed to schedule trigger: ${error.message}`);
+      }
+
+      return {
+        triggerType: "schedule",
+        scheduledJobId: scheduledJob.id,
+        nextRun: scheduledJob.next_run,
+        status: "scheduled",
+      };
+    } else if (node.type === "event-trigger") {
+      // Event-based trigger
+      const { data: eventTrigger, error } = await supabase
+        .from("event_triggers")
+        .insert({
+          workflow_id: context.workflowId,
+          node_id: node.id,
+          execution_id: context.executionId,
+          event_type: config.eventType,
+          event_filters: config.filters,
+          status: "active",
+          created_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (error) {
+        throw new Error(`Failed to create event trigger: ${error.message}`);
+      }
+
+      return {
+        triggerType: "event",
+        eventTriggerId: eventTrigger.id,
+        eventType: config.eventType,
+        status: "active",
+      };
+    }
+
+    return {
+      triggerType: "unknown",
+      status: "configured",
+    };
+  }
+
+  private async executeGenericNode(
+    node: AdvancedNodeData,
+    context: ExecutionContext,
+  ): Promise<any> {
+    this.log(
+      context,
+      node.id,
+      "info",
+      `Executing generic node of type: ${node.type}`,
+    );
+    return {
+      success: true,
+      message: `Generic node ${node.type} executed successfully.`,
+    };
+  }
+
+  private async executeAIReasoningNode(
+    node: AdvancedNodeData,
+    context: ExecutionContext,
+  ): Promise<any> {
+    const config = node.config.reasoning!;
+    let currentPlan = "";
+    let iterations = 0;
+
+    // Parse provider and model from config.model (expected format: "provider/model")
+    const [provider, model] = config.model.split("/", 2);
+    if (!provider || !model) {
+      throw new Error(
+        `Invalid model format: ${config.model}. Expected format: provider/model`,
+      );
+    }
+
+    // Get API key for the provider
+    const apiKey = context.apiKeys[provider.toLowerCase()];
+    if (!apiKey) {
+      throw new Error(`Missing API key for provider: ${provider}`);
+    }
+
+    while (iterations < config.maxIterations) {
+      // Planning phase
+      const planningPrompt = await this.promptEngineering.optimize(
+        config.planningPrompt,
+        {
+          context: context.variables,
+          iteration: iterations,
+        },
+      );
+
+      const planResponse = await this.callAI(
+        provider,
+        model,
+        [{ role: "user", content: planningPrompt }],
+        apiKey,
+        { temperature: 0.7, maxTokens: 1000 },
+      );
+      const plan =
+        planResponse.choices?.[0]?.message?.content ||
+        planResponse.content ||
+        planResponse;
+
+      // Reflection phase
+      const reflectionPrompt = await this.promptEngineering.optimize(
+        config.reflectionPrompt,
+        {
+          plan,
+          context: context.variables,
+          iteration: iterations,
+        },
+      );
+
+      const reflectionResponse = await this.callAI(
+        provider,
+        model,
+        [{ role: "user", content: reflectionPrompt }],
+        apiKey,
+        { temperature: 0.7, maxTokens: 1000 },
+      );
+      const reflection =
+        reflectionResponse.choices?.[0]?.message?.content ||
+        reflectionResponse.content ||
+        reflectionResponse;
+
+      // Check confidence
+      const confidence = this.extractConfidence(reflection);
+      if (confidence >= config.confidenceThreshold) {
+        return { plan, reflection, confidence, iterations: iterations + 1 };
+      }
+
+      currentPlan = plan;
+      iterations++;
+    }
+
+    return { plan: currentPlan, iterations, confidence: 0 };
+  }
+
+  private async executeMemoryNode(
+    node: AdvancedNodeData,
+    context: ExecutionContext,
+  ): Promise<any> {
+    const config = node.config.memory!;
+
+    if (config.type === "short-term") {
+      if (config.storageKey) {
+        context.memory.shortTerm[config.storageKey] = context.variables;
+        return { stored: true, key: config.storageKey };
+      }
+      return context.memory.shortTerm;
+    } else {
+      // Long-term memory with vector search
+      if (config.retrievalQuery) {
+        const memories = await this.memorySystem.retrieve(
+          config.retrievalQuery,
+          5,
+          config.scope,
+        );
+        return { memories, count: memories.length };
+      } else if (config.storageKey) {
+        const content = JSON.stringify(context.variables);
+        const memoryId = await this.memorySystem.store({
+          content: JSON.stringify(context.variables),
+          embedding: [], // Would need to generate embedding in real implementation
+          metadata: {
+            workflowId: context.workflowId,
+            nodeId: node.id,
+            type: "workflow-data",
+          },
+          scope: config.scope,
+        });
+        return { stored: true, memoryId };
+      }
+    }
+
+    return null;
+  }
+
+  private async executeToolCallingNode(
+    node: AdvancedNodeData,
+    context: ExecutionContext,
+  ): Promise<any> {
+    const config = node.config.toolCalling!;
+    const results = [];
+
+    for (const tool of config.tools) {
+      try {
+        const toolDef = await this.toolRegistry.getTool(tool.name);
+        if (!toolDef) continue;
+
+        const result = await this.toolRegistry.executeTool(
+          tool.name,
+          tool.parameters || {},
+        );
+        results.push({ tool: tool.name, result, success: true });
+      } catch (error) {
+        results.push({
+          tool: tool.name,
+          error: error instanceof Error ? error.message : String(error),
+          success: false,
+        });
+      }
+    }
+
+    return { results, totalTools: config.tools.length };
+  }
+
+  private async executeConditionalNode(
+    node: AdvancedNodeData,
+    context: ExecutionContext,
+    nodeResults: Map<string, any>,
+  ): Promise<any> {
+    const config = node.config.conditional!;
+    const results = [];
+
+    for (const condition of config.conditions) {
+      const value = this.getNestedValue(context.variables, condition.variable);
+      const matches = this.evaluateCondition(
+        value,
+        condition.operator,
+        condition.value,
+      );
+      results.push({ condition: condition.variable, matches, value });
+
+      if (config.evaluationMode === "any" && matches) break;
+      if (config.evaluationMode === "all" && !matches) break;
+    }
+
+    const overallMatch =
+      config.evaluationMode === "any"
+        ? results.some((r) => r.matches)
+        : results.every((r) => r.matches);
+
+    return {
+      conditions: results,
+      overallMatch,
+      nextPath: overallMatch ? "true" : "false",
+    };
+  }
+
+  private async executeApiCallNode(
+    node: AdvancedNodeData,
+    context: ExecutionContext,
+  ): Promise<any> {
+    const config = node.config.api!;
+    const url = this.interpolateVariables(config.url, context.variables);
+    const headers = this.interpolateVariables(
+      config.headers,
+      context.variables,
+    );
+    const body = config.body
+      ? this.interpolateVariables(config.body, context.variables)
+      : undefined;
+
+    let attempt = 0;
+    const maxRetries = config.retryConfig?.maxRetries || 3;
+
+    while (attempt < maxRetries) {
+      try {
+        const response = await fetch(url, {
+          method: config.method,
+          headers: {
+            "Content-Type": "application/json",
+            ...headers,
+          },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        return {
+          success: true,
+          data,
+          status: response.status,
+          attempt: attempt + 1,
+        };
+      } catch (error) {
+        attempt++;
+        if (attempt >= maxRetries) {
+          throw new Error(
+            `API call failed after ${maxRetries} attempts: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+
+        // Exponential backoff
+        const backoff = Math.min(
+          (config.retryConfig?.backoffMultiplier || 2) ** attempt * 1000,
+          config.retryConfig?.maxBackoff || 30000,
+        );
+        await new Promise((resolve) => setTimeout(resolve, backoff));
+      }
+    }
+  }
+
+  private log(
+    context: ExecutionContext,
+    nodeId: string,
+    level: ExecutionLog["level"],
+    message: string,
+    data?: any,
+  ) {
+    const log: ExecutionLog = {
+      id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      nodeId,
+      timestamp: new Date(),
+      level,
+      message,
+      data,
+    };
+    context.logs.push(log);
+  }
+
+  private async executeSequentially<T>(promises: Promise<T>[]): Promise<T[]> {
+    const results: T[] = [];
+    for (const promise of promises) {
+      results.push(await promise);
+    }
+    return results;
+  }
+
+  private aggregateByConsensus(results: any[]): any {
+    // Simple consensus: return the most common result
+    const resultCounts = new Map<string, number>();
+    const resultValues = new Map<string, any>();
+
+    for (const result of results) {
+      if (result.success && result.result) {
+        const key = JSON.stringify(result.result);
+        resultCounts.set(key, (resultCounts.get(key) || 0) + 1);
+        resultValues.set(key, result.result);
+      }
+    }
+
+    let maxCount = 0;
+    let consensusResult = null;
+
+    for (const [key, count] of resultCounts) {
+      if (count > maxCount) {
+        maxCount = count;
+        consensusResult = resultValues.get(key);
+      }
+    }
+
+    return consensusResult;
+  }
+
+  private aggregateByMajority(results: any[]): any {
+    // Return result from majority of agents
+    const successResults = results.filter((r) => r.success);
+    if (successResults.length > results.length / 2) {
+      return successResults[0]?.result; // Return first successful result
+    }
+    return null;
+  }
+
+  private aggregateByWeighted(
+    results: any[],
+    weights?: Record<string, number>,
+  ): any {
+    if (!weights) return this.aggregateByConsensus(results);
+
+    let totalWeight = 0;
+    let weightedResult = null;
+
+    for (const result of results) {
+      if (result.success && result.result) {
+        const weight = weights[result.agentId] || 1;
+        // Simple weighted aggregation - could be more sophisticated
+        if (!weightedResult || weight > totalWeight) {
+          weightedResult = result.result;
+          totalWeight = weight;
+        }
+      }
+    }
+
+    return weightedResult;
+  }
+
+  private evaluateLoopCondition(
+    condition: string,
+    iterationResult: any,
+  ): boolean {
+    // Simple condition evaluation - could be enhanced with expression evaluation
+    if (typeof condition === "string") {
+      // Check if the condition string appears in the iteration result
+      return JSON.stringify(iterationResult).includes(condition);
+    }
+    return false;
+  }
+
+  private calculateNextRun(scheduleConfig: any): string {
+    const now = new Date();
+
+    switch (scheduleConfig.type) {
+      case "cron":
+        // Simple cron parsing - would need a proper cron library
+        return new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(); // Daily default
+
+      case "interval":
+        const interval = scheduleConfig.interval || 3600000; // 1 hour default
+        return new Date(now.getTime() + interval).toISOString();
+
+      case "fixed":
+        return (
+          scheduleConfig.nextRun ||
+          new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString()
+        );
+
+      default:
+        return new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+    }
+  }
+
+  private transformResponse(data: any, transform: any): any {
+    // Simple transformation - could be enhanced with JSONPath or similar
+    if (transform.path) {
+      return this.getNestedValue(data, transform.path);
+    }
+
+    if (transform.map) {
+      const result: any = {};
+      for (const [newKey, path] of Object.entries(transform.map)) {
+        result[newKey] = this.getNestedValue(data, path as string);
+      }
+      return result;
+    }
+
+    return data;
+  }
+
+  private extractConfidence(text: string): number {
+    // Simple confidence extraction - in real implementation, use AI to analyze
+    return 0.8;
+  }
+
+  private getNestedValue(obj: any, path: string): any {
+    return path.split(".").reduce((current, key) => current?.[key], obj);
+  }
+
+  private evaluateCondition(
+    value: any,
+    operator: string,
+    expected: any,
+  ): boolean {
+    switch (operator) {
+      case "equals":
+        return value === expected;
+      case "not_equals":
+        return value !== expected;
+      case "contains":
+        return String(value).includes(String(expected));
+      case "greater_than":
+        return Number(value) > Number(expected);
+      case "less_than":
+        return Number(value) < Number(expected);
+      case "regex_match":
+        return new RegExp(expected).test(String(value));
+      default:
+        return false;
+    }
+  }
+
+  private interpolateVariables(
+    template: any,
+    variables: Record<string, any>,
+  ): any {
+    if (typeof template === "string") {
+      return template.replace(
+        /\{\{(\w+)\}\}/g,
+        (match, key) => variables[key] || match,
+      );
+    }
+    if (typeof template === "object" && template !== null) {
+      const result = { ...template };
+      for (const [key, value] of Object.entries(result)) {
+        result[key] = this.interpolateVariables(value, variables);
+      }
+      return result;
+    }
+    return template;
+  }
+
+  private calculateMemoryUsage(context: ExecutionContext): number {
+    // Rough estimation
+    return JSON.stringify(context).length;
+  }
+
+  private countApiCalls(logs: ExecutionLog[]): number {
+    return logs.filter((log) => log.message.includes("API call")).length;
+  }
+
+  // Database operations
+  private async storeExecutionStart(context: ExecutionContext): Promise<void> {
+    const { error } = await supabase.from("executions").upsert({
+      id: context.executionId,
+      ...context,
+      status: "running",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    if (error) {
+      console.error("Supabase storeExecutionStart error:", error);
+      throw new Error("Failed to store execution start.");
+    }
+  }
+
+  private async storeExecutionResult(result: ExecutionResult): Promise<void> {
+    const { error } = await supabase
+      .from("executions")
+      .update({
+        ...result,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", result.executionId);
+
+    if (error) {
+      console.error("Supabase storeExecutionResult error:", error);
+      throw new Error("Failed to store execution result.");
+    }
+  }
+
+  async validate(
+    workflow: WorkflowDefinition,
+  ): Promise<{ valid: boolean; errors: string[] }> {
+    const errors: string[] = [];
+
+    // Check for cycles
+    if (this.hasCycles(workflow.nodes, workflow.edges)) {
+      errors.push("Workflow contains cycles");
+    }
+
+    // Check for disconnected nodes
+    const connectedNodes = new Set();
+    workflow.edges.forEach((edge) => {
+      connectedNodes.add(edge.source);
+      connectedNodes.add(edge.target);
+    });
+
+    workflow.nodes.forEach((node) => {
+      if (!connectedNodes.has(node.id)) {
+        errors.push(`Node ${node.id} is not connected to the workflow`);
+      }
+    });
+
+    // Validate node configurations
+    workflow.nodes.forEach((node) => {
+      const nodeErrors = this.validateNode(node);
+      errors.push(...nodeErrors);
+    });
+
+    return { valid: errors.length === 0, errors };
+  }
+
+  private hasCycles(nodes: AdvancedNodeData[], edges: any[]): boolean {
+    // Simple cycle detection using DFS
+    const visited = new Set<string>();
+    const recStack = new Set<string>();
+
+    const dfs = (nodeId: string): boolean => {
+      if (recStack.has(nodeId)) return true;
+      if (visited.has(nodeId)) return false;
+
+      visited.add(nodeId);
+      recStack.add(nodeId);
+
+      const neighbors = edges
+        .filter((edge) => edge.source === nodeId)
+        .map((edge) => edge.target);
+
+      for (const neighbor of neighbors) {
+        if (dfs(neighbor)) return true;
+      }
+
+      recStack.delete(nodeId);
+      return false;
+    };
+
+    for (const node of nodes) {
+      if (dfs(node.id)) return true;
+    }
+
+    return false;
+  }
+
+  private validateNode(node: AdvancedNodeData): string[] {
+    const errors: string[] = [];
+
+    // Basic validation
+    if (!node.id) errors.push(`Node missing ID`);
+    if (!node.type) errors.push(`Node ${node.id} missing type`);
+    if (!node.label) errors.push(`Node ${node.id} missing label`);
+
+    // Type-specific validation
+    switch (node.type) {
+      case "ai-reasoning":
+        if (!node.config.reasoning?.model) {
+          errors.push(`Node ${node.id} missing AI model configuration`);
+        }
+        break;
+      case "action-api-call":
+        if (!node.config.api?.url) {
+          errors.push(`Node ${node.id} missing API URL`);
+        }
+        break;
+    }
+
+    return errors;
+  }
+
+  async getExecutionStatus(
+    executionId: string,
+  ): Promise<ExecutionResult | null> {
+    const { data, error } = await supabase
+      .from("executions")
+      .select("*")
+      .eq("id", executionId)
+      .single();
+
+    if (error) {
+      console.error("Supabase getExecutionStatus error:", error);
+      return null;
+    }
+
+    return data as ExecutionResult | null;
+  }
+
+  async cancelExecution(executionId: string): Promise<boolean> {
+    const { error } = await supabase
+      .from("executions")
+      .update({
+        status: "cancelled",
+        endTime: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", executionId);
+
+    if (error) {
+      console.error("Supabase cancelExecution error:", error);
+      return false;
+    }
+    return true;
+  }
+
+  async getExecutionHistory(
+    workflowId: string,
+    limitCount: number = 10,
+  ): Promise<ExecutionResult[]> {
+    const { data, error } = await supabase
+      .from("executions")
+      .select("*")
+      .eq("workflowId", workflowId)
+      .order("startTime", { ascending: false })
+      .limit(limitCount);
+
+    if (error) {
+      console.error("Supabase getExecutionHistory error:", error);
+      return [];
+    }
+
+    return (data || []) as ExecutionResult[];
+  }
+
+  private async callAI(
+    provider: string,
+    model: string,
+    messages: any[],
+    apiKey: string,
+    options: Record<string, any> = {},
+  ): Promise<any> {
+    try {
+      switch (provider.toLowerCase()) {
+        case "openai":
+          return await this.callOpenAI(model, messages, apiKey, options);
+        case "gemini":
+          return await this.callGemini(model, messages, apiKey, options);
+        case "anthropic":
+          return await this.callAnthropic(model, messages, apiKey, options);
+        case "deepseek":
+          return await this.callDeepSeek(model, messages, apiKey, options);
+        default:
+          throw new Error(`Unsupported AI provider: ${provider}`);
+      }
+    } catch (error) {
+      console.error(`AI call failed for provider ${provider}:`, error);
+      throw error;
+    }
+  }
+
+  private async callOpenAI(
+    model: string,
+    messages: any[],
+    apiKey: string,
+    options: Record<string, any>,
+  ): Promise<any> {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: options.temperature || 0.7,
+        max_tokens: options.maxTokens || 1000,
+        ...options,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(
+        `OpenAI API error: ${error.error?.message || response.statusText}`,
+      );
+    }
+
+    return await response.json();
+  }
+
+  private async callGemini(
+    model: string,
+    messages: any[],
+    apiKey: string,
+    options: Record<string, any>,
+  ): Promise<any> {
+    // Convert messages to Gemini format
+    const contents = messages.map((msg) => ({
+      role: msg.role === "assistant" ? "model" : msg.role,
+      parts: [{ text: msg.content }],
+    }));
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          contents,
+          generationConfig: {
+            temperature: options.temperature || 0.7,
+            maxOutputTokens: options.maxTokens || 1000,
+            ...options,
+          },
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(
+        `Gemini API error: ${error.error?.message || response.statusText}`,
+      );
+    }
+
+    return await response.json();
+  }
+
+  private async callAnthropic(
+    model: string,
+    messages: any[],
+    apiKey: string,
+    options: Record<string, any>,
+  ): Promise<any> {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: options.maxTokens || 1000,
+        temperature: options.temperature || 0.7,
+        ...options,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(
+        `Anthropic API error: ${error.error?.message || response.statusText}`,
+      );
+    }
+
+    return await response.json();
+  }
+
+  private async callDeepSeek(
+    model: string,
+    messages: any[],
+    apiKey: string,
+    options: Record<string, any>,
+  ): Promise<any> {
+    const response = await fetch(
+      "https://api.deepseek.com/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: options.temperature || 0.7,
+          max_tokens: options.maxTokens || 1000,
+          ...options,
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(
+        `DeepSeek API error: ${error.error?.message || response.statusText}`,
+      );
+    }
+
+    return await response.json();
+  }
+}
+
+// Placeholder implementations for dependencies
+class MemorySystem {
+  async store(
+    content: string,
+    metadata: Record<string, any>,
+    scope: string,
+  ): Promise<string> {
+    return `mem_${Date.now()}`;
+  }
+
+  async retrieve(
+    query: string,
+    scope: string,
+    limit?: number,
+  ): Promise<VectorMemory[]> {
+    return [];
+  }
+
+  async update(
+    memoryId: string,
+    content: string,
+    metadata: Record<string, any>,
+  ): Promise<boolean> {
+    return true;
+  }
+
+  async delete(memoryId: string): Promise<boolean> {
+    return true;
+  }
+
+  async searchSimilar(
+    embedding: number[],
+    scope: string,
+    threshold?: number,
+  ): Promise<VectorMemory[]> {
+    return [];
+  }
+}
+
+class ToolRegistry {
+  async register(tool: any): Promise<string> {
+    return `tool_${Date.now()}`;
+  }
+
+  async unregister(toolId: string): Promise<boolean> {
+    return true;
+  }
+
+  async getTool(toolId: string): Promise<any> {
+    return null;
+  }
+
+  async listTools(category?: string): Promise<any[]> {
+    return [];
+  }
+
+  async executeTool(
+    toolId: string,
+    parameters: Record<string, any>,
+  ): Promise<any> {
+    return {};
+  }
+}
+
+export class PromptEngineering {
+  async optimize(
+    prompt: string,
+    context: Record<string, any>,
+  ): Promise<string> {
+    return prompt;
+  }
+
+  async generateFromTemplate(
+    templateId: string,
+    variables: Record<string, any>,
+  ): Promise<string> {
+    return "";
+  }
+
+  async validatePrompt(
+    prompt: string,
+  ): Promise<{ valid: boolean; errors: string[] }> {
+    return { valid: true, errors: [] };
+  }
+
+  async generateSystemPrompt(
+    type: string,
+    config?: Record<string, any>,
+  ): Promise<string> {
+    // Generate system prompts based on type
+    switch (type) {
+      case "ai-chat":
+        return "You are a helpful AI assistant.";
+      case "ai-reasoning":
+        return "You are an AI assistant that thinks step by step.";
+      default:
+        return "You are an AI assistant.";
+    }
+  }
+
+  async getTemplates(category?: string): Promise<any[]> {
+    return [];
+  }
+}
+
+// ===========================================
+// EXECUTE AGENT FUNCTION (FOR JOB PROCESSOR)
+// ===========================================
+
+export async function executeAgent({
+  agentId,
+  userId,
+  input,
+  config,
+  apiKeys,
+  executionId,
+}: {
+  agentId: string;
+  userId: string;
+  input: Record<string, any>;
+  config: Record<string, any>;
+  apiKeys: Record<string, any>;
+  executionId: string;
+}) {
+  try {
+    // Create workflow definition from agent config
+    const workflow: WorkflowDefinition = {
+      id: agentId,
+      name: config.agentName || "Agent Workflow",
+      description: "Generated workflow from agent configuration",
+      version: "1.0.0",
+      nodes: config.nodes || [],
+      edges: config.edges || [],
+      metadata: {
+        author: userId,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        tags: ["agent", "generated"],
+        category: "ai-agent",
+        permissions: ["execute"],
+      },
+      settings: {
+        maxExecutionTime: 300000, // 5 minutes
+        maxMemoryUsage: 1000000, // 1MB
+        allowParallelExecution: false,
+        enableDebugging: true,
+        logLevel: "info",
+      },
+    };
+
+    // Create execution engine
+    const memorySystem = new SupabaseMemorySystem();
+    const toolRegistry = new SupabaseToolRegistry();
+    const promptEngineering = new PromptEngineering();
+
+    const engine = new CloudExecutionEngine(
+      memorySystem,
+      toolRegistry,
+      promptEngineering,
+    );
+
+    // Execute workflow
+    const result = await engine.execute(workflow, {
+      userId,
+      variables: { ...input, apiKeys },
+    });
+
+    return result;
+  } catch (error) {
+    console.error(`Agent execution failed for ${executionId}:`, error);
+    throw error;
+  }
+}
