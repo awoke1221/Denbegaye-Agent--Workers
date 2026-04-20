@@ -43,6 +43,8 @@ import { facebookNode } from "./social/facebook";
 import { googleCalendarNode } from "./calendars/google-calendar";
 import { googleSheetsNode } from "./data/google-sheets";
 import { googleDocsNode } from "./data/google-docs";
+import { gmailNode } from "./data/gmail";
+import { gmailTriggerNode } from "./triggers/gmail";
 
 // Register all nodes explicitly
 nodeRegistry.register(geminiNode);
@@ -59,6 +61,8 @@ nodeRegistry.register(facebookNode);
 nodeRegistry.register(googleCalendarNode);
 nodeRegistry.register(googleSheetsNode);
 nodeRegistry.register(googleDocsNode);
+nodeRegistry.register(gmailNode);
+nodeRegistry.register(gmailTriggerNode);
 
 // Test nodes for compatibility
 import { z } from "zod";

@@ -51,6 +51,8 @@ const facebook_1 = require("./social/facebook");
 const google_calendar_1 = require("./calendars/google-calendar");
 const google_sheets_1 = require("./data/google-sheets");
 const google_docs_1 = require("./data/google-docs");
+const gmail_1 = require("./data/gmail");
+const gmail_2 = require("./triggers/gmail");
 // Register all nodes explicitly
 types_1.nodeRegistry.register(gemini_1.geminiNode);
 types_1.nodeRegistry.register(deepseek_1.deepseekNode);
@@ -66,6 +68,8 @@ types_1.nodeRegistry.register(facebook_1.facebookNode);
 types_1.nodeRegistry.register(google_calendar_1.googleCalendarNode);
 types_1.nodeRegistry.register(google_sheets_1.googleSheetsNode);
 types_1.nodeRegistry.register(google_docs_1.googleDocsNode);
+types_1.nodeRegistry.register(gmail_1.gmailNode);
+types_1.nodeRegistry.register(gmail_2.gmailTriggerNode);
 // Test nodes for compatibility
 const zod_1 = require("zod");
 const memoryNode = {

@@ -17,6 +17,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 // Data & Storage Nodes
 __exportStar(require("./google-sheets"), exports);
 __exportStar(require("./google-docs"), exports);
+__exportStar(require("./gmail"), exports);
 // Import all data nodes to register them
 require("./google-sheets");
 require("./google-docs");
+require("./gmail");

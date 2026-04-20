@@ -17,6 +17,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 // Trigger Nodes
 __exportStar(require("./webhook"), exports);
 __exportStar(require("./email"), exports);
+__exportStar(require("./gmail"), exports);
 // Import all trigger nodes to register them
 require("./webhook");
 require("./email");
+require("./gmail");
