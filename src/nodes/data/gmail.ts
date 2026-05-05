@@ -1302,6 +1302,4 @@ const gmailNode: NodeDefinition = {
   },
 };
 
-nodeRegistry.register(gmailNode);
-
 export { gmailNode };

@@ -37,7 +37,7 @@ export interface NodeData {
  */
 export interface NodeState {
   /** Current status */
-  status: 'idle' | 'running' | 'completed' | 'error';
+  status: "idle" | "running" | "completed" | "error";
   /** Execution result */
   result?: any;
   /** Error message if failed */
@@ -98,7 +98,7 @@ export interface UserAgent {
     edges: AgentEdge[];
     [key: string]: any;
   };
-  status: 'draft' | 'active' | 'archived' | 'error' | 'published' | string;
+  status: "draft" | "active" | "archived" | "error" | "published" | string;
   version?: string;
   created_at?: Date;
   updated_at?: Date;
@@ -129,7 +129,7 @@ export interface ExecutionLogEntry {
   /** Timestamp */
   timestamp: Date;
   /** Log level */
-  level: 'info' | 'warn' | 'error';
+  level: "info" | "warn" | "error";
   /** Log message */
   message: string;
   /** Associated node ID */
@@ -141,6 +141,7 @@ export interface ExecutionLogEntry {
 /**
  * Result of workflow execution.
  */
+
 export interface ExecutionResult {
   /** Success status */
   success: boolean;

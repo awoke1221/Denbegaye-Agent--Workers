@@ -3,6 +3,7 @@ import { z } from "zod";
 import { supabase } from "./supabaseClient";
 import { decryptValue } from "./encryption";
 import { executeWorkflow } from "./agentEngine";
+import { emitSocketEvent } from "./socket";
 import { AgentEdgeInputSchema } from "./validation";
 
 const REDIS_URL = process.env.REDIS_URL;
@@ -430,6 +431,8 @@ async function processJobFunction(
       started_at: new Date().toISOString(),
     });
 
+    emitSocketEvent("execution-started", { executionId });
+
     // Update job status in queue
     await supabase
       .from("job_queue")
@@ -442,12 +445,28 @@ async function processJobFunction(
     // Decrypt API keys
     const decryptedApiKeys = JSON.parse(decryptValue(apiKeys));
 
-    // Execute the agent workflow
+    // Execute the agent workflow (default missing input to an empty object)
     const result = await executeWorkflow(
       config.nodes || [],
       config.edges || [],
-      input,
+      input ?? {},
       decryptedApiKeys,
+      {
+        onNodeStart: (nodeId) => {
+          emitSocketEvent("node-started", { executionId, nodeId });
+        },
+        onNodeComplete: (nodeId, success, error) => {
+          emitSocketEvent("node-completed", {
+            executionId,
+            nodeId,
+            success,
+            error,
+          });
+        },
+        onExecutionComplete: (success) => {
+          emitSocketEvent("execution-completed", { executionId, success });
+        },
+      },
     );
 
     if (!result.success) {
@@ -485,6 +504,12 @@ async function processJobFunction(
     const errorMessage = error instanceof Error ? error.message : String(error);
 
     console.error(`Job processing failed for ${executionId}:`, error);
+
+    emitSocketEvent("execution-completed", {
+      executionId,
+      success: false,
+      error: errorMessage,
+    });
 
     // Update execution status to failed
     await updateExecutionStatus(executionId, "failed", {

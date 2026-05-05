@@ -2,7 +2,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.gmailTriggerNode = void 0;
 const zod_1 = require("zod");
-const index_1 = require("../index");
 const googleapis_1 = require("googleapis");
 const gmailTriggerConfigSchema = zod_1.z.object({
     authMethod: zod_1.z.enum(["manual", "google-oauth"]).default("manual"),
@@ -457,4 +456,3 @@ class GmailTriggerMonitor {
         this.knownMessageIds.clear();
     }
 }
-index_1.nodeRegistry.register(gmailTriggerNode);

@@ -57,7 +57,7 @@ function safeEval(expression, context = {}) {
 async function executeWorkflow(nodes, edges, input, apiKeys, options) {
     const startTime = Date.now();
     const context = {
-        input,
+        input: input ?? {},
         variables: {},
         output: {},
         logs: [],

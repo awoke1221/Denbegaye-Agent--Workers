@@ -10,6 +10,7 @@ const zod_1 = require("zod");
 const supabaseClient_1 = require("./supabaseClient");
 const encryption_1 = require("./encryption");
 const agentEngine_1 = require("./agentEngine");
+const socket_1 = require("./socket");
 const validation_1 = require("./validation");
 const REDIS_URL = process.env.REDIS_URL;
 const REDIS_QUEUE_KEY = "agent_execution_queue";
@@ -349,6 +350,7 @@ async function processJobFunction(jobData, jobId) {
         await updateExecutionStatus(executionId, "running", {
             started_at: new Date().toISOString(),
         });
+        (0, socket_1.emitSocketEvent)("execution-started", { executionId });
         // Update job status in queue
         await supabaseClient_1.supabase
             .from("job_queue")
@@ -359,8 +361,23 @@ async function processJobFunction(jobData, jobId) {
             .eq("id", jobId);
         // Decrypt API keys
         const decryptedApiKeys = JSON.parse((0, encryption_1.decryptValue)(apiKeys));
-        // Execute the agent workflow
-        const result = await (0, agentEngine_1.executeWorkflow)(config.nodes || [], config.edges || [], input, decryptedApiKeys);
+        // Execute the agent workflow (default missing input to an empty object)
+        const result = await (0, agentEngine_1.executeWorkflow)(config.nodes || [], config.edges || [], input ?? {}, decryptedApiKeys, {
+            onNodeStart: (nodeId) => {
+                (0, socket_1.emitSocketEvent)("node-started", { executionId, nodeId });
+            },
+            onNodeComplete: (nodeId, success, error) => {
+                (0, socket_1.emitSocketEvent)("node-completed", {
+                    executionId,
+                    nodeId,
+                    success,
+                    error,
+                });
+            },
+            onExecutionComplete: (success) => {
+                (0, socket_1.emitSocketEvent)("execution-completed", { executionId, success });
+            },
+        });
         if (!result.success) {
             throw new Error(`Workflow execution failed with errors: ${result.errors.join(", ")}`);
         }
@@ -390,6 +407,11 @@ async function processJobFunction(jobData, jobId) {
         const executionTime = Date.now() - jobStartTime;
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.error(`Job processing failed for ${executionId}:`, error);
+        (0, socket_1.emitSocketEvent)("execution-completed", {
+            executionId,
+            success: false,
+            error: errorMessage,
+        });
         // Update execution status to failed
         await updateExecutionStatus(executionId, "failed", {
             error_message: errorMessage,

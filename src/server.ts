@@ -11,7 +11,7 @@ import { WebhookHandler } from "./nodes/triggers/webhook";
 
 // Extend global interface
 declare global {
-  var io: Server;
+  var io: Server | undefined;
   var webhookHandler: WebhookHandler;
 }
 
@@ -23,7 +23,7 @@ const server = createServer(app);
 const io = new Server(server, {
   cors: {
     origin: process.env.FRONTEND_URL || "http://localhost:3000",
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   },
 });
 const PORT = process.env.PORT || 3001;

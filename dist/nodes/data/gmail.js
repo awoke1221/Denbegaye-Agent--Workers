@@ -5,7 +5,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.gmailNode = void 0;
 const zod_1 = require("zod");
-const index_1 = require("../index");
 const googleapis_1 = require("googleapis");
 const axios_1 = __importDefault(require("axios"));
 const gmailConfigSchema = zod_1.z.object({
@@ -1103,4 +1102,3 @@ const gmailNode = {
     },
 };
 exports.gmailNode = gmailNode;
-index_1.nodeRegistry.register(gmailNode);

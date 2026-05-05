@@ -261,7 +261,7 @@ async function withRetry(operation, retryConfig, logs) {
 // Main Gemini node definition
 const geminiNode = {
     id: "google-gemini",
-    type: "ai-google-gemini",
+    type: "ai-gemini",
     name: "Google Gemini",
     description: "Advanced AI reasoning using Google Gemini models with comprehensive functionality",
     category: "ai",

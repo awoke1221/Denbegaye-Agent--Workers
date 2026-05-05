@@ -161,7 +161,7 @@ export async function executeWorkflow(
 ): Promise<ExecutionResult> {
   const startTime = Date.now();
   const context: ExecutionContext = {
-    input,
+    input: input ?? {},
     variables: {},
     output: {},
     logs: [],

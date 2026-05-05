@@ -594,6 +594,4 @@ class GmailTriggerMonitor {
   }
 }
 
-nodeRegistry.register(gmailTriggerNode);
-
 export { gmailTriggerNode };
