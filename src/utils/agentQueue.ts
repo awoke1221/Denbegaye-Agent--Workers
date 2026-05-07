@@ -475,7 +475,13 @@ async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
             error,
           });
         },
-        onExecutionComplete: (success, partialSuccess) => {
+        onExecutionComplete: (result: any) => {
+          const success =
+            typeof result === "boolean" ? result : result?.success || false;
+          const partialSuccess =
+            typeof result === "object"
+              ? result?.partialSuccess || false
+              : false;
           emitSocketEvent("execution-completed", {
             executionId,
             success,

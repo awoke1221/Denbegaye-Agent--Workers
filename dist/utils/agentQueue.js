@@ -392,7 +392,9 @@ async function processJobFunction(jobData, jobId) {
                     error,
                 });
             },
-            onExecutionComplete: (success, partialSuccess) => {
+            onExecutionComplete: (result) => {
+                const success = typeof result === 'boolean' ? result : result?.success || false;
+                const partialSuccess = typeof result === 'object' ? result?.partialSuccess || false : false;
                 (0, socket_1.emitSocketEvent)("execution-completed", {
                     executionId,
                     success,

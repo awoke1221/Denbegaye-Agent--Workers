@@ -314,7 +314,7 @@ class AdvancedWorkflowBuilder {
                     status: "failed",
                     errors: [
                         {
-                            nodeId: null,
+                            nodeId: undefined,
                             error: executionError instanceof Error
                                 ? executionError.message
                                 : String(executionError),

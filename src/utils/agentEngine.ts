@@ -55,7 +55,7 @@ interface WorkflowExecutionResult {
   circuitBreakerTripped: boolean;
 }
 
-class AdvancedWorkflowExecutor {
+export class AdvancedWorkflowExecutor {
   private context: WorkflowExecutionContext;
   private nodeStates: Map<string, NodeExecutionState> = new Map();
   private circuitBreakerFailures: Map<string, number> = new Map();
@@ -356,12 +356,12 @@ class AdvancedWorkflowExecutor {
       } else {
         nodeState.error = result.error;
         nodeState.status = "failed";
-        errors.push(result.error);
+        errors.push(result.error || "Unknown error");
         logs.push(...result.logs);
         hasFailures = true;
 
         // Check if we should abort execution based on failure policy
-        if (this.shouldAbortExecution(node, result.error)) {
+        if (this.shouldAbortExecution(node, result.error || "Unknown error")) {
           this.executionAborted = true;
           break;
         }
@@ -958,6 +958,11 @@ export async function executeWorkflow(
         apiKeys,
         options,
       );
+
+      // Call execution complete callback for advanced executor
+      if (options?.onExecutionComplete) {
+        options.onExecutionComplete(result as any);
+      }
     }
 
     const executionTime = Date.now() - startTime;

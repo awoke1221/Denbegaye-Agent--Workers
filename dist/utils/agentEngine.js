@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.AdvancedWorkflowExecutor = void 0;
 exports.executeWorkflow = executeWorkflow;
 const langgraphWorkflowBuilder_1 = require("./langgraphWorkflowBuilder");
 const nodes_1 = require("../nodes");
@@ -221,11 +222,11 @@ class AdvancedWorkflowExecutor {
             else {
                 nodeState.error = result.error;
                 nodeState.status = "failed";
-                errors.push(result.error);
+                errors.push(result.error || "Unknown error");
                 logs.push(...result.logs);
                 hasFailures = true;
                 // Check if we should abort execution based on failure policy
-                if (this.shouldAbortExecution(node, result.error)) {
+                if (this.shouldAbortExecution(node, result.error || "Unknown error")) {
                     this.executionAborted = true;
                     break;
                 }
@@ -576,6 +577,7 @@ class AdvancedWorkflowExecutor {
         }
     }
 }
+exports.AdvancedWorkflowExecutor = AdvancedWorkflowExecutor;
 async function executeWorkflow(nodes, edges, input, apiKeys, executionId, userId, options) {
     const startTime = Date.now();
     try {
@@ -650,6 +652,10 @@ async function executeWorkflow(nodes, edges, input, apiKeys, executionId, userId
                 executionTimeout: 300000, // 5 minutes
             });
             result = await advancedExecutor.executeWorkflow(nodes, edges, input, apiKeys, options);
+            // Call execution complete callback for advanced executor
+            if (options?.onExecutionComplete) {
+                options.onExecutionComplete(result);
+            }
         }
         const executionTime = Date.now() - startTime;
         if ("state" in result) {

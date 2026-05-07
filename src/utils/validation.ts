@@ -193,11 +193,7 @@ function validateNodeConfig(node: AgentNode): {
     case "ai-anthropic":
     case "ai-groq":
     case "ai-deepseek":
-      if (
-        !node.config?.prompt &&
-        !node.config?.messages &&
-        !node.input?.prompt
-      ) {
+      if (!node.config?.prompt && !node.config?.messages) {
         errors.push(
           `Node ${node.id}: AI nodes require a prompt or messages configuration`,
         );
@@ -224,7 +220,7 @@ function validateNodeConfig(node: AgentNode): {
       break;
 
     case "action-email":
-      if (!node.config?.to && !node.config?.recipients && !node.input?.to) {
+      if (!node.config?.to && !node.config?.recipients) {
         errors.push(
           `Node ${node.id}: Email action nodes require recipient configuration`,
         );
@@ -232,7 +228,7 @@ function validateNodeConfig(node: AgentNode): {
       break;
 
     case "action-webhook":
-      if (!node.config?.url && !node.input?.url) {
+      if (!node.config?.url) {
         errors.push(
           `Node ${node.id}: Webhook action nodes require a URL configuration`,
         );
@@ -254,7 +250,7 @@ function validateNodeConfig(node: AgentNode): {
 
     case "core-code-js":
     case "core-code-python":
-      if (!node.config?.code && !node.input?.code) {
+      if (!node.config?.code) {
         errors.push(
           `Node ${node.id}: Code execution nodes require a code block configuration`,
         );
@@ -262,7 +258,7 @@ function validateNodeConfig(node: AgentNode): {
       break;
 
     case "logic-delay":
-      if (!node.config?.duration && !node.input?.duration) {
+      if (!node.config?.duration) {
         errors.push(
           `Node ${node.id}: Delay nodes require a duration configuration`,
         );
@@ -271,7 +267,7 @@ function validateNodeConfig(node: AgentNode): {
 
     case "logic-if":
     case "core-if":
-      if (!node.config?.condition && !node.input?.condition) {
+      if (!node.config?.condition) {
         errors.push(
           `Node ${node.id}: Logic nodes require a condition configuration`,
         );

@@ -35,9 +35,12 @@ const aiHandler = async (context) => {
     const apiKey = context.config?.apiKey;
     const model = context.config?.model;
     const systemMessage = context.config?.systemMessage || "";
-    const prompt = context.config?.prompt || context.input?.prompt ||
-        context.input?.messages || context.input?.text ||
-        JSON.stringify(context.input || {}) || "No prompt provided";
+    const prompt = context.config?.prompt ||
+        context.input?.prompt ||
+        context.input?.messages ||
+        context.input?.text ||
+        JSON.stringify(context.input || {}) ||
+        "No prompt provided";
     if (!apiKey) {
         return {
             success: false,
@@ -56,7 +59,9 @@ const aiHandler = async (context) => {
             message: `AI node ${context.nodeType || context.type} executed successfully`,
             executionType: "ai-generic",
         },
-        logs: [`AI node ${context.nodeId} executed with model ${model || 'default'}`],
+        logs: [
+            `AI node ${context.nodeId} executed with model ${model || "default"}`,
+        ],
     };
 };
 const triggerHandler = async (context) => {
@@ -116,8 +121,10 @@ const openaiHandler = async (context) => {
     const apiKey = context.config?.apiKey || context.apiKeys?.openai;
     const model = context.config?.model || "gpt-4o-mini";
     const systemMessage = context.config?.systemMessage || "";
-    const prompt = context.config?.prompt || context.input?.prompt ||
-        context.input?.text || JSON.stringify(context.input);
+    const prompt = context.config?.prompt ||
+        context.input?.prompt ||
+        context.input?.text ||
+        JSON.stringify(context.input);
     if (!apiKey) {
         return {
             success: false,
@@ -143,8 +150,10 @@ const anthropicHandler = async (context) => {
     const apiKey = context.config?.apiKey || context.apiKeys?.anthropic;
     const model = context.config?.model || "claude-3.5-opus";
     const systemMessage = context.config?.systemMessage || "";
-    const prompt = context.config?.prompt || context.input?.prompt ||
-        context.input?.text || JSON.stringify(context.input);
+    const prompt = context.config?.prompt ||
+        context.input?.prompt ||
+        context.input?.text ||
+        JSON.stringify(context.input);
     if (!apiKey) {
         return {
             success: false,
@@ -170,8 +179,10 @@ const groqHandler = async (context) => {
     const apiKey = context.config?.apiKey || context.apiKeys?.groq;
     const model = context.config?.model || "groq-1.0";
     const systemMessage = context.config?.systemMessage || "";
-    const prompt = context.config?.prompt || context.input?.prompt ||
-        context.input?.text || JSON.stringify(context.input);
+    const prompt = context.config?.prompt ||
+        context.input?.prompt ||
+        context.input?.text ||
+        JSON.stringify(context.input);
     if (!apiKey) {
         return {
             success: false,
@@ -197,8 +208,10 @@ const geminiHandler = async (context) => {
     const apiKey = context.config?.apiKey || context.apiKeys?.gemini;
     const model = context.config?.model || "gemini-1.5-pro";
     const systemMessage = context.config?.systemMessage || "";
-    const prompt = context.config?.prompt || context.input?.prompt ||
-        context.input?.text || JSON.stringify(context.input);
+    const prompt = context.config?.prompt ||
+        context.input?.prompt ||
+        context.input?.text ||
+        JSON.stringify(context.input);
     if (!apiKey) {
         return {
             success: false,
@@ -224,8 +237,10 @@ const deepseekHandler = async (context) => {
     const apiKey = context.config?.apiKey || context.apiKeys?.deepseek;
     const model = context.config?.model || "deepseek-chat";
     const systemMessage = context.config?.systemMessage || "";
-    const prompt = context.config?.prompt || context.input?.prompt ||
-        context.input?.text || JSON.stringify(context.input);
+    const prompt = context.config?.prompt ||
+        context.input?.prompt ||
+        context.input?.text ||
+        JSON.stringify(context.input);
     if (!apiKey) {
         return {
             success: false,

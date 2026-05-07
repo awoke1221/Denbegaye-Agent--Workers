@@ -14,4 +14,7 @@ export const logger = {
       meta || "",
     );
   },
+  warn: (message: string, meta?: any) => {
+    console.warn(`[WARN] ${new Date().toISOString()} - ${message}`, meta || "");
+  },
 };
