@@ -9,6 +9,7 @@ const AgentNodeTypeSchema = z.enum([
   "manual-input",
   "webhook-input",
   "file-input",
+  "group",
   "ai-openai",
   "ai-gemini",
   "ai-deepseek",
@@ -20,6 +21,7 @@ const AgentNodeTypeSchema = z.enum([
   "action-save-db",
   "action-webhook",
   "action-telegram",
+  "action-whatsapp",
   "action-linkedin",
   "action-facebook",
   "action-tiktok",
@@ -31,6 +33,11 @@ const AgentNodeTypeSchema = z.enum([
   "trigger-schedule",
   "trigger-imap",
   "trigger-chat-message",
+  "trigger-email",
+  "trigger-gmail",
+  "calendar-google",
+  "data-google-sheets",
+  "data-gmail",
   "core-http-request",
   "core-code-js",
   "core-code-python",
@@ -118,9 +125,10 @@ export const validateAgentGraph = (
 
   // Always generate execution plan (even with warnings)
   const executionPlan = generateExecutionPlan(nodes, normalizedEdges);
+  const valid = executionValidation.valid;
 
   return {
-    valid: true, // Always valid - no graph structure validation
+    valid,
     normalizedEdges,
     errors:
       executionValidation.errors.length > 0
@@ -182,17 +190,21 @@ function validateNodeConfig(node: AgentNode): {
   switch (node.type) {
     case "ai-openai":
     case "ai-gemini":
-    case "ai-deepseek":
     case "ai-anthropic":
     case "ai-groq":
-      if (!node.config?.prompt && !node.config?.messages) {
+    case "ai-deepseek":
+      if (
+        !node.config?.prompt &&
+        !node.config?.messages &&
+        !node.input?.prompt
+      ) {
         errors.push(
           `Node ${node.id}: AI nodes require a prompt or messages configuration`,
         );
       }
-      if (!node.config?.model) {
+      if (!node.config?.model && !node.config?.apiKey) {
         warnings.push(
-          `Node ${node.id}: AI nodes should specify a model for better performance`,
+          `Node ${node.id}: AI nodes should specify a model and API key`,
         );
       }
       break;
@@ -212,16 +224,54 @@ function validateNodeConfig(node: AgentNode): {
       break;
 
     case "action-email":
-      if (!node.config?.to && !node.config?.recipients) {
+      if (!node.config?.to && !node.config?.recipients && !node.input?.to) {
         errors.push(
           `Node ${node.id}: Email action nodes require recipient configuration`,
         );
       }
       break;
 
+    case "action-webhook":
+      if (!node.config?.url && !node.input?.url) {
+        errors.push(
+          `Node ${node.id}: Webhook action nodes require a URL configuration`,
+        );
+      }
+      if (!node.config?.method) {
+        warnings.push(
+          `Node ${node.id}: Webhook nodes should specify an HTTP method (defaulting to POST)`,
+        );
+      }
+      break;
+
+    case "trigger-schedule":
+      if (!node.config?.cronExpression && !node.config?.interval) {
+        errors.push(
+          `Node ${node.id}: Schedule trigger nodes require a cron expression or interval`,
+        );
+      }
+      break;
+
+    case "core-code-js":
+    case "core-code-python":
+      if (!node.config?.code && !node.input?.code) {
+        errors.push(
+          `Node ${node.id}: Code execution nodes require a code block configuration`,
+        );
+      }
+      break;
+
+    case "logic-delay":
+      if (!node.config?.duration && !node.input?.duration) {
+        errors.push(
+          `Node ${node.id}: Delay nodes require a duration configuration`,
+        );
+      }
+      break;
+
     case "logic-if":
     case "core-if":
-      if (!node.config?.condition) {
+      if (!node.config?.condition && !node.input?.condition) {
         errors.push(
           `Node ${node.id}: Logic nodes require a condition configuration`,
         );

@@ -10,26 +10,45 @@ const REDIS_URL = process.env.REDIS_URL;
 const REDIS_QUEUE_KEY = "agent_execution_queue";
 const redisClient = REDIS_URL ? new Redis(REDIS_URL) : null;
 
-// Types
-export interface AgentExecutionJobData {
-  agentId: string;
-  userId: string;
-  input: any;
-  config: any;
-  apiKeys: string; // Encrypted
-  executionId: string;
-}
+type AgentRunPayload = {
+  agentId?: string;
+  nodes: Array<{ id: string; type: string; config?: Record<string, unknown> }>;
+  edges?: Array<z.infer<typeof AgentEdgeInputSchema>>;
+  input?: Record<string, unknown>;
+  apiKeys: string; // Encrypted string
+  agentName?: string;
+  config?: { nodes?: unknown[]; edges?: unknown[] };
+  executionId?: string;
+  userId?: string;
+};
 
-export interface AgentQueueRedisPayload extends AgentExecutionJobData {
+type JobQueueRow = {
+  id: string;
+  job_type: string;
+  payload: AgentRunPayload;
+  status: string;
+  priority: number;
+  max_attempts?: number;
+  attempt_count: number;
+  scheduled_at: string;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+  failed_at?: string;
+  error_message?: string;
+};
+
+type QueueOptions = {
+  priority?: number;
+  delay?: number;
+};
+
+type RedisQueuePayload = {
   jobId: string;
-}
+} & AgentRunPayload;
 
-async function publishJobToRedis(
-  jobId: string,
-  jobData: AgentExecutionJobData,
-) {
+async function publishJobToRedis(jobId: string, jobData: AgentRunPayload) {
   if (!redisClient) return;
-
   try {
     await redisClient.lpush(
       REDIS_QUEUE_KEY,
@@ -40,26 +59,25 @@ async function publishJobToRedis(
   }
 }
 
-export async function reserveAgentQueueJob(timeoutSeconds = 30) {
+export async function reserveAgentQueueJob(
+  timeoutSeconds = 30,
+): Promise<RedisQueuePayload | null> {
   if (!redisClient) {
     throw new Error(
       "Redis queue is not configured. Set REDIS_URL to enable worker queueing.",
     );
   }
-
   const result = await redisClient.brpop(REDIS_QUEUE_KEY, timeoutSeconds);
   if (!result) return null;
-
   const [, payload] = result;
   try {
-    return JSON.parse(payload) as AgentQueueRedisPayload;
+    return JSON.parse(payload);
   } catch (error) {
     console.error("Failed to parse Redis queue payload:", error);
     return null;
   }
 }
 
-// Status transition validation
 const VALID_STATUS_TRANSITIONS: Record<string, string[]> = {
   queued: ["running"],
   running: ["completed", "failed"],
@@ -68,30 +86,29 @@ const VALID_STATUS_TRANSITIONS: Record<string, string[]> = {
   cancelled: [],
 };
 
-function isValidStatusTransition(
-  currentStatus: string,
-  newStatus: string,
-): boolean {
+function isValidStatusTransition(currentStatus: string, newStatus: string) {
   return VALID_STATUS_TRANSITIONS[currentStatus]?.includes(newStatus) ?? false;
 }
 
 async function updateExecutionStatus(
-  executionId: string,
+  executionId: string | undefined,
   newStatus: string,
-  additionalData: any = {},
+  additionalData: Record<string, unknown> = {},
 ) {
-  // Get current status
-  const { data: execution } = await supabase
+  if (!executionId) {
+    console.error("Missing execution ID for status update");
+    return;
+  }
+  const { data: execution, error } = await supabase
     .from("agent_executions")
     .select("status")
     .eq("id", executionId)
     .single();
 
-  if (!execution) {
-    console.error(`Execution ${executionId} not found`);
+  if (error || !execution) {
+    console.error(`Execution ${executionId} not found`, error);
     return;
   }
-
   if (!isValidStatusTransition(execution.status, newStatus)) {
     console.error(
       `Invalid status transition from ${execution.status} to ${newStatus} for execution ${executionId}`,
@@ -99,7 +116,10 @@ async function updateExecutionStatus(
     return;
   }
 
-  const updateData = { status: newStatus, ...additionalData };
+  const updateData: Record<string, unknown> = {
+    status: newStatus,
+    ...additionalData,
+  };
   if (newStatus === "completed" || newStatus === "failed") {
     updateData.completed_at = new Date().toISOString();
   }
@@ -110,20 +130,16 @@ async function updateExecutionStatus(
     .eq("id", executionId);
 }
 
-// Database-backed job queue with retry persistence
 class DatabaseQueue {
   private processing = false;
-  private maxConcurrency = 5; // Process up to 5 jobs concurrently
+  private dbProcessing = false;
+  private redisProcessing = false;
+  private maxConcurrency = 5;
   private processingJobs = new Set<string>();
   private started = false;
 
-  async add(
-    jobData: AgentExecutionJobData,
-    options: { priority?: number; delay?: number } = {},
-  ) {
+  async add(jobData: AgentRunPayload, options: QueueOptions = {}) {
     const jobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-    // Insert job into database
     const { error } = await supabase.from("job_queue").insert({
       id: jobId,
       job_type: "agent_execution",
@@ -143,37 +159,34 @@ class DatabaseQueue {
       throw error;
     }
 
-    // Ensure queue processing is started in the current process.
     void this.start().catch((queueError) => {
       console.error("Failed to ensure queue processing started:", queueError);
     });
 
     if (redisClient) {
-      // When Redis is configured, publish the job to the worker queue.
       await publishJobToRedis(jobId, jobData);
     }
 
     return { id: jobId };
   }
 
-  public async start() {
+  async start() {
     if (this.started) return;
     this.started = true;
-
     if (redisClient) {
       void this.startRedisConsumer();
+      void this.startProcessing();
     } else {
       void this.startProcessing();
     }
   }
 
   private async startProcessing() {
-    if (this.processing) return;
+    if (this.dbProcessing) return;
+    this.dbProcessing = true;
     this.processing = true;
-
     while (this.processing) {
       try {
-        // Get available jobs (not currently being processed)
         const { data: jobs, error } = await supabase
           .from("job_queue")
           .select("*")
@@ -194,17 +207,16 @@ class DatabaseQueue {
 
         if (error) {
           console.error("Error fetching jobs:", error);
-          await this.delay(5000); // Wait 5 seconds before retrying
+          await this.delay(5000);
           continue;
         }
-
         if (!jobs || jobs.length === 0) {
-          await this.delay(1000); // Wait 1 second before checking again
+          await this.delay(1000);
           continue;
         }
-
-        // Process jobs concurrently
-        const processingPromises = jobs.map((job) => this.processJob(job));
+        const processingPromises = jobs.map((job) =>
+          this.processJob(job as JobQueueRow),
+        );
         await Promise.allSettled(processingPromises);
       } catch (error) {
         console.error("Queue processing error:", error);
@@ -213,26 +225,37 @@ class DatabaseQueue {
     }
   }
 
-  private async processJob(job: any) {
+  private async claimJob(job: JobQueueRow): Promise<boolean> {
+    const { data: claimedJob, error } = await supabase
+      .from("job_queue")
+      .update({
+        status: "processing",
+        started_at: new Date().toISOString(),
+        attempt_count: job.attempt_count + 1,
+      })
+      .eq("id", job.id)
+      .eq("status", "queued")
+      .select("id")
+      .single();
+
+    if (error || !claimedJob) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private async processJob(job: JobQueueRow) {
     if (this.processingJobs.has(job.id)) return;
-
     this.processingJobs.add(job.id);
-
     try {
-      // Mark job as processing
-      await supabase
-        .from("job_queue")
-        .update({
-          status: "processing",
-          started_at: new Date().toISOString(),
-          attempt_count: job.attempt_count + 1,
-        })
-        .eq("id", job.id);
+      const claimed = await this.claimJob(job);
+      if (!claimed) {
+        return;
+      }
 
-      // Process the job
       await processJobFunction(job.payload, job.id);
 
-      // Mark as completed
       await supabase
         .from("job_queue")
         .update({
@@ -242,12 +265,9 @@ class DatabaseQueue {
         .eq("id", job.id);
     } catch (error) {
       console.error(`Job ${job.id} failed:`, error);
-
       const attemptCount = job.attempt_count + 1;
       const maxAttempts = job.max_attempts || 3;
-
       if (attemptCount >= maxAttempts) {
-        // Move to dead-letter queue
         await supabase
           .from("job_queue")
           .update({
@@ -257,8 +277,6 @@ class DatabaseQueue {
             failed_at: new Date().toISOString(),
           })
           .eq("id", job.id);
-
-        // Log to analytics
         await supabase.from("usage_analytics").insert({
           user_id: job.payload.userId,
           event_type: "dead_letter_job",
@@ -272,8 +290,7 @@ class DatabaseQueue {
           },
         });
       } else {
-        // Schedule retry with exponential backoff
-        const delay = Math.min(1000 * Math.pow(2, attemptCount - 1), 300000); // Max 5 minutes
+        const delay = Math.min(1000 * Math.pow(2, attemptCount - 1), 300000);
         await supabase
           .from("job_queue")
           .update({
@@ -295,16 +312,15 @@ class DatabaseQueue {
   }
 
   private async startRedisConsumer() {
-    if (this.processing) return;
+    if (this.redisProcessing) return;
+    this.redisProcessing = true;
     this.processing = true;
-
     while (this.processing) {
       try {
         const payload = await reserveAgentQueueJob(30);
         if (!payload) {
           continue;
         }
-
         await this.processRedisPayload(payload);
       } catch (error) {
         console.error("Redis consumer error:", error);
@@ -313,7 +329,7 @@ class DatabaseQueue {
     }
   }
 
-  private async processRedisPayload(payload: AgentQueueRedisPayload) {
+  private async processRedisPayload(payload: RedisQueuePayload) {
     const jobId = payload.jobId;
     try {
       const { data: job, error } = await supabase
@@ -321,66 +337,63 @@ class DatabaseQueue {
         .select("*")
         .eq("id", jobId)
         .single();
-
       if (error || !job) {
         console.error(`Failed to fetch job ${jobId} from queue`, error);
         return;
       }
-
-      await this.processJob(job);
+      const jobRow = job as JobQueueRow;
+      if (jobRow.status !== "queued") {
+        return;
+      }
+      await this.processJob(jobRow);
     } catch (error) {
       console.error(`Failed to process Redis queue job ${jobId}:`, error);
     }
   }
 
-  async getWaiting(): Promise<any[]> {
+  async getWaiting() {
     const { data } = await supabase
       .from("job_queue")
       .select("*")
       .eq("status", "queued")
       .order("priority", { ascending: false })
       .order("created_at", { ascending: true });
-
     return data || [];
   }
 
-  async getActive(): Promise<any[]> {
+  async getActive() {
     const { data } = await supabase
       .from("job_queue")
       .select("*")
       .eq("status", "processing");
-
     return data || [];
   }
 
-  async getCompleted(): Promise<any[]> {
+  async getCompleted() {
     const { data } = await supabase
       .from("job_queue")
       .select("*")
       .eq("status", "completed")
       .order("completed_at", { ascending: false });
-
     return data || [];
   }
 
-  async getFailed(): Promise<any[]> {
+  async getFailed() {
     const { data } = await supabase
       .from("job_queue")
       .select("*")
       .eq("status", "failed")
       .order("created_at", { ascending: false });
-
     return data || [];
   }
 
-  async getDelayed(): Promise<any[]> {
+  async getDelayed() {
     const { data } = await supabase
       .from("job_queue")
       .select("*")
       .eq("status", "queued")
       .gt("scheduled_at", new Date().toISOString())
       .order("scheduled_at", { ascending: true });
-
     return data || [];
   }
 }
@@ -401,10 +414,11 @@ export const agentRunSchema = z
     input: z.record(z.any()).optional().default({}),
     apiKeys: z.record(z.any()).optional().default({}),
     agentName: z.string().min(1).optional().default("Unnamed Agent"),
+    saveAsAgent: z.boolean().optional().default(false), // NEW: Only save as agent if explicitly requested
+    isTemporary: z.boolean().optional().default(true), // NEW: Mark execution as temporary
   })
   .refine(
     (data) => {
-      // Validate that all edge endpoints exist in nodes
       const nodeIds = new Set(data.nodes.map((n) => n.id));
       for (const edge of data.edges) {
         if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) {
@@ -418,22 +432,21 @@ export const agentRunSchema = z
       path: ["edges"],
     },
   );
-async function processJobFunction(
-  jobData: AgentExecutionJobData,
-  jobId: string,
-) {
-  const { agentId, userId, input, config, apiKeys, executionId } = jobData;
-  const jobStartTime = Date.now();
 
+async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
+  const { agentId, userId, input, config, apiKeys, executionId } = jobData;
+  if (!executionId) {
+    throw new Error("Missing executionId");
+  }
+  if (!userId) {
+    throw new Error("Missing userId");
+  }
+  const jobStartTime = Date.now();
   try {
-    // Update status to running with start time
     await updateExecutionStatus(executionId, "running", {
       started_at: new Date().toISOString(),
     });
-
     emitSocketEvent("execution-started", { executionId });
-
-    // Update job status in queue
     await supabase
       .from("job_queue")
       .update({
@@ -442,15 +455,14 @@ async function processJobFunction(
       })
       .eq("id", jobId);
 
-    // Decrypt API keys
     const decryptedApiKeys = JSON.parse(decryptValue(apiKeys));
-
-    // Execute the agent workflow (default missing input to an empty object)
     const result = await executeWorkflow(
-      config.nodes || [],
-      config.edges || [],
+      config?.nodes || [],
+      config?.edges || [],
       input ?? {},
       decryptedApiKeys,
+      executionId,
+      userId,
       {
         onNodeStart: (nodeId) => {
           emitSocketEvent("node-started", { executionId, nodeId });
@@ -463,62 +475,86 @@ async function processJobFunction(
             error,
           });
         },
-        onExecutionComplete: (success) => {
-          emitSocketEvent("execution-completed", { executionId, success });
+        onExecutionComplete: (success, partialSuccess) => {
+          emitSocketEvent("execution-completed", {
+            executionId,
+            success,
+            partialSuccess,
+          });
+        },
+        onCompensationStart: (nodeId) => {
+          emitSocketEvent("compensation-started", { executionId, nodeId });
+        },
+        onCompensationComplete: (nodeId, success) => {
+          emitSocketEvent("compensation-completed", {
+            executionId,
+            nodeId,
+            success,
+          });
         },
       },
     );
 
-    if (!result.success) {
-      throw new Error(
-        `Workflow execution failed with errors: ${result.errors.join(", ")}`,
-      );
-    }
-
-    // Calculate execution time
     const executionTime = Date.now() - jobStartTime;
 
-    // Update execution status to completed
-    await updateExecutionStatus(executionId, "completed", {
-      result: result.output,
+    // Determine final status based on advanced execution result
+    let finalStatus: string;
+    let finalResult: any = result;
+
+    if (result.success) {
+      finalStatus = "completed";
+    } else if ((result as any).partialSuccess) {
+      // Partial success - workflow had some successful nodes but overall failed
+      finalStatus = "partial_success";
+      finalResult = {
+        ...result,
+        partialSuccess: true,
+        compensatedNodes: (result as any).compensatedNodes || [],
+        failedNodes: (result as any).failedNodes || [],
+      };
+    } else {
+      finalStatus = "failed";
+    }
+
+    await updateExecutionStatus(executionId, finalStatus, {
+      result: finalResult,
       execution_time_ms: executionTime,
       completed_at: new Date().toISOString(),
       logs: result.logs,
       errors: result.errors,
-      tokens_used: 0, // TODO: Add token counting
+      tokens_used: 0,
+      partial_success: (result as any).partialSuccess || false,
+      compensated_nodes: (result as any).compensatedNodes || [],
+      failed_nodes: (result as any).failedNodes || [],
+      circuit_breaker_tripped: (result as any).circuitBreakerTripped || false,
     });
 
-    // Update job status to completed
     await supabase
       .from("job_queue")
       .update({
-        status: "completed",
+        status: finalStatus === "completed" ? "completed" : "failed",
         completed_at: new Date().toISOString(),
-        result: JSON.stringify(result),
+        result: JSON.stringify(finalResult),
       })
       .eq("id", jobId);
 
-    return result;
+    return finalResult;
   } catch (error) {
     const executionTime = Date.now() - jobStartTime;
     const errorMessage = error instanceof Error ? error.message : String(error);
-
     console.error(`Job processing failed for ${executionId}:`, error);
-
     emitSocketEvent("execution-completed", {
       executionId,
       success: false,
       error: errorMessage,
     });
 
-    // Update execution status to failed
     await updateExecutionStatus(executionId, "failed", {
       error_message: errorMessage,
       execution_time_ms: executionTime,
       completed_at: new Date().toISOString(),
     });
 
-    // Update job status to failed
     await supabase
       .from("job_queue")
       .update({
@@ -528,16 +564,13 @@ async function processJobFunction(
       })
       .eq("id", jobId);
 
-    // Move to dead letter queue if retry attempts exceeded
     const { data: job } = await supabase
       .from("job_queue")
       .select("attempt_count")
       .eq("id", jobId)
       .single();
-
     const retryCount = (job?.attempt_count || 0) + 1;
     const maxRetries = 3;
-
     if (retryCount >= maxRetries) {
       await supabase
         .from("job_queue")
@@ -547,10 +580,8 @@ async function processJobFunction(
         })
         .eq("id", jobId);
     } else {
-      // Schedule retry with exponential backoff
-      const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 300000); // Max 5 minutes
+      const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 300000);
       const retryAt = new Date(Date.now() + backoffDelay);
-
       await supabase
         .from("job_queue")
         .update({
@@ -560,14 +591,12 @@ async function processJobFunction(
         })
         .eq("id", jobId);
     }
-
     throw error;
   }
 }
 
 export const agentQueue = new DatabaseQueue();
 
-// Dead-letter queue (same implementation for now)
 export const deadLetterQueue = {
   async getWaiting() {
     const { data } = await supabase
@@ -575,10 +604,8 @@ export const deadLetterQueue = {
       .select("*")
       .eq("status", "dead_letter")
       .order("created_at", { ascending: false });
-
     return data || [];
   },
-
   async getJob(jobId: string) {
     const { data } = await supabase
       .from("job_queue")
@@ -586,17 +613,13 @@ export const deadLetterQueue = {
       .eq("id", jobId)
       .eq("status", "dead_letter")
       .single();
-
     return data;
   },
-
-  async add(jobData: AgentExecutionJobData) {
-    // This is handled by the main queue when jobs fail
+  async add(jobData: AgentRunPayload) {
     return { id: "dead-letter" };
   },
 };
 
-// Queue management utilities
 export class QueueManager {
   static async getQueueStats() {
     const [waiting, active, completed, failed, delayed, deadLetter] =
@@ -608,7 +631,6 @@ export class QueueManager {
         agentQueue.getDelayed(),
         deadLetterQueue.getWaiting(),
       ]);
-
     return {
       waiting: waiting.length,
       active: active.length,
@@ -620,13 +642,10 @@ export class QueueManager {
   }
 
   static async retryDeadLetterJob(jobId: string) {
-    // Get the dead-letter job
     const job = await deadLetterQueue.getJob(jobId);
     if (!job) {
       throw new Error(`Dead-letter job ${jobId} not found`);
     }
-
-    // Reset job for retry
     await supabase
       .from("job_queue")
       .update({
@@ -636,31 +655,28 @@ export class QueueManager {
         scheduled_at: new Date().toISOString(),
       })
       .eq("id", jobId);
-
     return { success: true, message: `Job ${jobId} moved back to main queue` };
   }
 
-  static async cleanupOldJobs(olderThanDays: number = 30) {
+  static async cleanupOldJobs(olderThanDays = 30) {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - olderThanDays);
-
-    const { data: completedJobs } = (await supabase
+    const completedResponse: { data: unknown } = await supabase
       .from("job_queue")
       .delete()
       .eq("status", "completed")
-      .lt("completed_at", cutoff.toISOString())) as { data: any[] | null };
-
-    const { data: failedJobs } = (await supabase
+      .lt("completed_at", cutoff.toISOString());
+    const failedResponse: { data: unknown } = await supabase
       .from("job_queue")
       .delete()
       .eq("status", "failed")
-      .lt("created_at", cutoff.toISOString())) as { data: any[] | null };
-
+      .lt("created_at", cutoff.toISOString());
+    const completedJobs = completedResponse.data;
+    const failedJobs = failedResponse.data;
     const completedCount = Array.isArray(completedJobs)
       ? completedJobs.length
       : 0;
     const failedCount = Array.isArray(failedJobs) ? failedJobs.length : 0;
-
     return {
       completedJobsCleaned: completedCount,
       failedJobsCleaned: failedCount,
@@ -668,8 +684,6 @@ export class QueueManager {
   }
 
   static async pauseQueue() {
-    // For database-backed queue, we can't easily pause
-    // This would require additional state management
     return {
       success: false,
       message: "Pause not implemented for database queue",
@@ -677,7 +691,6 @@ export class QueueManager {
   }
 
   static async resumeQueue() {
-    // For database-backed queue, processing is always active
     return {
       success: false,
       message: "Resume not implemented for database queue",

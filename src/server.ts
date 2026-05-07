@@ -8,6 +8,7 @@ import { initializeQueue } from "./index";
 import { logger } from "./utils/logger";
 import { setupRoutes } from "./routes";
 import { WebhookHandler } from "./nodes/triggers/webhook";
+import { workflowMonitoring } from "./utils/workflowMonitoring";
 
 // Extend global interface
 declare global {
@@ -42,11 +43,55 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+// Advanced health check endpoint with monitoring metrics
+app.get("/health/advanced", async (req, res) => {
+  try {
+    const metrics = await workflowMonitoring.getHealthMetrics(1); // Last hour
+    res.json({
+      status: "ok",
+      timestamp: new Date().toISOString(),
+      metrics,
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: "error",
+      timestamp: new Date().toISOString(),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+// Make io and webhookHandler available globally for emitting events
+globalThis.io = io;
+globalThis.webhookHandler = webhookHandler;
+
 // Setup API routes
-setupRoutes(app);
+setupRoutes(app, io);
 
 // Initialize queue worker
 initializeQueue();
+
+// Initialize workflow monitoring system
+workflowMonitoring.startMonitoring(60000); // Check every minute
+
+// Graceful shutdown handling
+process.on("SIGINT", () => {
+  logger.info("Received SIGINT, shutting down gracefully...");
+  workflowMonitoring.stopMonitoring();
+  server.close(() => {
+    logger.info("Server closed");
+    process.exit(0);
+  });
+});
+
+process.on("SIGTERM", () => {
+  logger.info("Received SIGTERM, shutting down gracefully...");
+  workflowMonitoring.stopMonitoring();
+  server.close(() => {
+    logger.info("Server closed");
+    process.exit(0);
+  });
+});
 
 // Socket.IO connection handling
 io.on("connection", (socket) => {
@@ -57,12 +102,9 @@ io.on("connection", (socket) => {
   });
 });
 
-// Make io and webhookHandler available globally for emitting events
-global.io = io;
-global.webhookHandler = webhookHandler;
-
 server.listen(PORT, () => {
   logger.info(`Workers server running on port ${PORT}`);
+  logger.info(`Advanced workflow monitoring enabled`);
 });
 
 export default app;

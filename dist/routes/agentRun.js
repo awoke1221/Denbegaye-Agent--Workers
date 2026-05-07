@@ -5,6 +5,7 @@ const supabaseClient_1 = require("../utils/supabaseClient");
 const encryption_1 = require("../utils/encryption");
 const validation_1 = require("../utils/validation");
 const agentQueue_1 = require("../utils/agentQueue");
+const logger_1 = require("../utils/logger");
 const crypto_1 = require("crypto");
 // Status transition validation
 const VALID_STATUS_TRANSITIONS = {
@@ -39,16 +40,24 @@ const agentRunHandler = async (req, res) => {
             }));
             return res.status(400).json({ error: "Invalid workflow", details });
         }
-        const { agentId: providedAgentId, nodes, edges, input, apiKeys, agentName, } = parseResult.data;
+        const { agentId: providedAgentId, nodes, edges, input, apiKeys, agentName, saveAsAgent = false, // NEW: Default to false - don't auto-save as new agent
+        isTemporary = true, // NEW: Mark as temporary execution
+         } = parseResult.data;
         const graphValidation = (0, validation_1.validateAgentGraph)(nodes, edges);
         if (!graphValidation.valid) {
+            console.debug("Workflow graph failed validation", {
+                errors: graphValidation.errors,
+                warnings: graphValidation.warnings,
+            });
             return res.status(400).json({
                 error: "Invalid workflow graph",
-                details: graphValidation.errors,
+                details: {
+                    errors: graphValidation.errors,
+                    warnings: graphValidation.warnings,
+                },
             });
         }
-        const normalizedEdges = graphValidation.normalizedEdges ??
-            (0, validation_1.normalizeAgentEdges)(edges);
+        const normalizedEdges = graphValidation.normalizedEdges ?? (0, validation_1.normalizeAgentEdges)(edges);
         let agentId;
         let agentVersion;
         if (providedAgentId) {
@@ -67,8 +76,9 @@ const agentRunHandler = async (req, res) => {
             agentId = agentData.id;
             agentVersion = agentData.version;
         }
-        else {
-            // Save agent to database
+        else if (saveAsAgent && agentName) {
+            // FIXED: Only save as agent if explicitly requested with saveAsAgent=true and agentName provided
+            // This prevents auto-creating agents for temporary workflow executions
             const { data: agentData, error: agentError } = await supabaseClient_1.supabase
                 .from("user_agents")
                 .insert({
@@ -87,6 +97,12 @@ const agentRunHandler = async (req, res) => {
             }
             agentId = agentData.id;
             agentVersion = agentData.version;
+        }
+        else {
+            // FIXED: Use temporary execution ID without creating an agent record
+            // This is for ad-hoc workflow testing/execution without persisting as an agent
+            agentId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            agentVersion = "temp";
         }
         // Generate idempotency key
         const idempotencyKey = (0, crypto_1.createHash)("sha256")
@@ -128,30 +144,55 @@ const agentRunHandler = async (req, res) => {
         if ((userActiveJobs || 0) >= 5) {
             return res.status(429).json({ error: "System busy, try later" });
         }
-        const executionInsert = await supabaseClient_1.supabase
-            .from("agent_executions")
-            .insert({
-            agent_id: agentId,
+        // For temporary executions, don't store agent_id to avoid foreign key conflicts
+        const executionData = {
             user_id: userId,
             idempotency_key: idempotencyKey,
             status: "queued",
             input_data: input,
             started_at: new Date().toISOString(),
-        })
+        };
+        // Only include agent_id if it's not a temporary ID
+        if (!agentId.startsWith("temp_")) {
+            executionData.agent_id = agentId;
+        }
+        else {
+            executionData.agent_id = null;
+        }
+        const executionInsert = await supabaseClient_1.supabase
+            .from("agent_executions")
+            .insert(executionData)
             .select("id")
             .single();
         if (executionInsert.error || !executionInsert.data?.id) {
+            console.error("Execution insert error:", executionInsert.error);
             return res.status(500).json({
                 error: "Failed to create execution record",
-                details: executionInsert.error?.message,
+                details: executionInsert.error?.message ||
+                    JSON.stringify(executionInsert.error),
             });
         }
         const executionId = executionInsert.data.id;
+        if (isTemporary || agentId.startsWith("temp_")) {
+            const tempUpdate = await supabaseClient_1.supabase
+                .from("agent_executions")
+                .update({ is_temporary: true })
+                .eq("id", executionId);
+            if (tempUpdate.error) {
+                if (tempUpdate.error.code === "PGRST204") {
+                    logger_1.logger.info("Temporary execution flag skipped because schema is not migrated");
+                }
+                else {
+                    logger_1.logger.error("Failed to apply temporary execution flag", tempUpdate.error);
+                }
+            }
+        }
         const encryptedApiKeys = (0, encryption_1.encryptValue)(JSON.stringify(apiKeys || {}));
         let job;
         try {
             job = await agentQueue_1.agentQueue.add({
                 agentId,
+                nodes,
                 userId,
                 input: input || {},
                 config: { nodes, edges: normalizedEdges },

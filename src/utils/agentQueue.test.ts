@@ -188,6 +188,7 @@ describe("agentQueue", () => {
 
     const jobData = {
       agentId: "agent-123",
+      nodes: [],
       userId: "user-123",
       input: { test: "data" },
       config: { nodes: [], edges: [] },

@@ -1,17 +1,9 @@
 import { Request, Response } from "express";
 import { supabase } from "../utils/supabaseClient";
 import { encryptValue } from "../utils/encryption";
-import {
-  validateAgentGraph,
-  normalizeAgentEdges,
-  AgentEdgeInput,
-} from "../utils/validation";
-import { AgentEdge, AgentNode } from "../jobs/types";
-import {
-  agentQueue,
-  agentRunSchema,
-  AgentExecutionJobData,
-} from "../utils/agentQueue";
+import { validateAgentGraph, normalizeAgentEdges } from "../utils/validation";
+import { agentQueue, agentRunSchema } from "../utils/agentQueue";
+import { logger } from "../utils/logger";
 import { createHash } from "crypto";
 
 // Status transition validation
@@ -50,8 +42,8 @@ export const agentRunHandler = async (req: Request, res: Response) => {
     }
 
     const userId = user.id;
-
     const body = req.body;
+
     const parseResult = agentRunSchema.safeParse(body);
     if (!parseResult.success) {
       const details = parseResult.error.errors.map((err) => ({
@@ -68,22 +60,28 @@ export const agentRunHandler = async (req: Request, res: Response) => {
       input,
       apiKeys,
       agentName,
+      saveAsAgent = false, // NEW: Default to false - don't auto-save as new agent
+      isTemporary = true, // NEW: Mark as temporary execution
     } = parseResult.data;
 
-    const graphValidation = validateAgentGraph(
-      nodes as AgentNode[],
-      edges as Array<AgentEdge | AgentEdgeInput>,
-    );
+    const graphValidation = validateAgentGraph(nodes as any, edges as any);
     if (!graphValidation.valid) {
+      console.debug("Workflow graph failed validation", {
+        errors: graphValidation.errors,
+        warnings: graphValidation.warnings,
+      });
+
       return res.status(400).json({
         error: "Invalid workflow graph",
-        details: graphValidation.errors,
+        details: {
+          errors: graphValidation.errors,
+          warnings: graphValidation.warnings,
+        },
       });
     }
 
     const normalizedEdges =
-      graphValidation.normalizedEdges ??
-      normalizeAgentEdges(edges as Array<AgentEdge | AgentEdgeInput>);
+      graphValidation.normalizedEdges ?? normalizeAgentEdges(edges);
 
     let agentId: string;
     let agentVersion: string;
@@ -105,8 +103,9 @@ export const agentRunHandler = async (req: Request, res: Response) => {
 
       agentId = agentData.id;
       agentVersion = agentData.version;
-    } else {
-      // Save agent to database
+    } else if (saveAsAgent && agentName) {
+      // FIXED: Only save as agent if explicitly requested with saveAsAgent=true and agentName provided
+      // This prevents auto-creating agents for temporary workflow executions
       const { data: agentData, error: agentError } = await supabase
         .from("user_agents")
         .insert({
@@ -127,6 +126,11 @@ export const agentRunHandler = async (req: Request, res: Response) => {
 
       agentId = agentData.id;
       agentVersion = agentData.version;
+    } else {
+      // FIXED: Use temporary execution ID without creating an agent record
+      // This is for ad-hoc workflow testing/execution without persisting as an agent
+      agentId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      agentVersion = "temp";
     }
 
     // Generate idempotency key
@@ -157,6 +161,7 @@ export const agentRunHandler = async (req: Request, res: Response) => {
     const waitingJobs = await agentQueue.getWaiting();
     const activeJobs = await agentQueue.getActive();
     const totalQueuedJobs = waitingJobs.length + activeJobs.length;
+
     if (totalQueuedJobs > 1000) {
       return res.status(429).json({ error: "System busy, try later" });
     }
@@ -177,27 +182,59 @@ export const agentRunHandler = async (req: Request, res: Response) => {
       return res.status(429).json({ error: "System busy, try later" });
     }
 
+    // For temporary executions, don't store agent_id to avoid foreign key conflicts
+    const executionData: any = {
+      user_id: userId,
+      idempotency_key: idempotencyKey,
+      status: "queued",
+      input_data: input,
+      started_at: new Date().toISOString(),
+    };
+
+    // Only include agent_id if it's not a temporary ID
+    if (!agentId.startsWith("temp_")) {
+      executionData.agent_id = agentId;
+    } else {
+      executionData.agent_id = null;
+    }
+
     const executionInsert = await supabase
       .from("agent_executions")
-      .insert({
-        agent_id: agentId,
-        user_id: userId,
-        idempotency_key: idempotencyKey,
-        status: "queued",
-        input_data: input,
-        started_at: new Date().toISOString(),
-      })
+      .insert(executionData)
       .select("id")
       .single();
 
     if (executionInsert.error || !executionInsert.data?.id) {
+      console.error("Execution insert error:", executionInsert.error);
       return res.status(500).json({
         error: "Failed to create execution record",
-        details: executionInsert.error?.message,
+        details:
+          executionInsert.error?.message ||
+          JSON.stringify(executionInsert.error),
       });
     }
 
     const executionId = executionInsert.data.id;
+
+    if (isTemporary || agentId.startsWith("temp_")) {
+      const tempUpdate = await supabase
+        .from("agent_executions")
+        .update({ is_temporary: true })
+        .eq("id", executionId);
+
+      if (tempUpdate.error) {
+        if (tempUpdate.error.code === "PGRST204") {
+          logger.info(
+            "Temporary execution flag skipped because schema is not migrated",
+          );
+        } else {
+          logger.error(
+            "Failed to apply temporary execution flag",
+            tempUpdate.error,
+          );
+        }
+      }
+    }
 
     const encryptedApiKeys = encryptValue(JSON.stringify(apiKeys || {}));
 
@@ -206,6 +243,7 @@ export const agentRunHandler = async (req: Request, res: Response) => {
       job = await agentQueue.add(
         {
           agentId,
+          nodes,
           userId,
           input: input || {},
           config: { nodes, edges: normalizedEdges },

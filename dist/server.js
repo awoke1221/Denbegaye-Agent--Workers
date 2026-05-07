@@ -13,6 +13,7 @@ const index_1 = require("./index");
 const logger_1 = require("./utils/logger");
 const routes_1 = require("./routes");
 const webhook_1 = require("./nodes/triggers/webhook");
+const workflowMonitoring_1 = require("./utils/workflowMonitoring");
 // Load environment variables
 dotenv_1.default.config({ path: ".env.local" });
 const app = (0, express_1.default)();
@@ -35,10 +36,50 @@ app.use(express_1.default.urlencoded({ extended: true }));
 app.get("/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
+// Advanced health check endpoint with monitoring metrics
+app.get("/health/advanced", async (req, res) => {
+    try {
+        const metrics = await workflowMonitoring_1.workflowMonitoring.getHealthMetrics(1); // Last hour
+        res.json({
+            status: "ok",
+            timestamp: new Date().toISOString(),
+            metrics,
+        });
+    }
+    catch (error) {
+        res.status(500).json({
+            status: "error",
+            timestamp: new Date().toISOString(),
+            error: error instanceof Error ? error.message : String(error),
+        });
+    }
+});
+// Make io and webhookHandler available globally for emitting events
+globalThis.io = io;
+globalThis.webhookHandler = webhookHandler;
 // Setup API routes
-(0, routes_1.setupRoutes)(app);
+(0, routes_1.setupRoutes)(app, io);
 // Initialize queue worker
 (0, index_1.initializeQueue)();
+// Initialize workflow monitoring system
+workflowMonitoring_1.workflowMonitoring.startMonitoring(60000); // Check every minute
+// Graceful shutdown handling
+process.on("SIGINT", () => {
+    logger_1.logger.info("Received SIGINT, shutting down gracefully...");
+    workflowMonitoring_1.workflowMonitoring.stopMonitoring();
+    server.close(() => {
+        logger_1.logger.info("Server closed");
+        process.exit(0);
+    });
+});
+process.on("SIGTERM", () => {
+    logger_1.logger.info("Received SIGTERM, shutting down gracefully...");
+    workflowMonitoring_1.workflowMonitoring.stopMonitoring();
+    server.close(() => {
+        logger_1.logger.info("Server closed");
+        process.exit(0);
+    });
+});
 // Socket.IO connection handling
 io.on("connection", (socket) => {
     logger_1.logger.info(`Client connected: ${socket.id}`);
@@ -46,10 +87,8 @@ io.on("connection", (socket) => {
         logger_1.logger.info(`Client disconnected: ${socket.id}`);
     });
 });
-// Make io and webhookHandler available globally for emitting events
-global.io = io;
-global.webhookHandler = webhookHandler;
 server.listen(PORT, () => {
     logger_1.logger.info(`Workers server running on port ${PORT}`);
+    logger_1.logger.info(`Advanced workflow monitoring enabled`);
 });
 exports.default = app;
