@@ -901,23 +901,29 @@ export async function executeWorkflow(
           event.nodeId &&
           options.onNodeStart
         ) {
+          logger.debug("Stream event: node_start", { nodeId: event.nodeId });
           options.onNodeStart(event.nodeId);
         } else if (
           event.type === "node_end" &&
           event.nodeId &&
           options.onNodeComplete
         ) {
+          logger.debug("Stream event: node_end", { nodeId: event.nodeId });
           options.onNodeComplete(event.nodeId, true);
         } else if (
           event.type === "node_error" &&
           event.nodeId &&
           options.onNodeComplete
         ) {
+          logger.debug("Stream event: node_error", { nodeId: event.nodeId });
           options.onNodeComplete(event.nodeId, false, event.data?.error);
         } else if (
           event.type === "execution_complete" &&
           options.onExecutionComplete
         ) {
+          logger.debug("Stream event: execution_complete", {
+            success: event.data?.success,
+          });
           const success =
             event.data?.status === "completed" || event.data?.success === true;
           options.onExecutionComplete({ success });
@@ -926,8 +932,13 @@ export async function executeWorkflow(
     }
 
     let result;
+    logger.info("Executing LangGraph workflow", { executionId });
     try {
       result = await builder.execute(input);
+      logger.info("LangGraph execution succeeded", {
+        executionId,
+        success: result.success,
+      });
     } catch (builderError) {
       logger.warn(
         "LangGraph execution failed, falling back to advanced executor",

@@ -144,6 +144,10 @@ export class AdvancedWorkflowBuilder {
     const nodeId = nodeConfig.id;
 
     this.graph.addNode(nodeId, async (state: AgentStateType) => {
+      logger.info("Node processor invoked by LangGraph", {
+        executionId: this.config.executionId,
+        nodeId,
+      });
       return await this.executeNode(state, nodeConfig);
     });
 
@@ -159,6 +163,11 @@ export class AdvancedWorkflowBuilder {
   ): Promise<Partial<AgentStateType>> {
     const nodeId = nodeConfig.id;
     const startTime = new Date();
+    logger.info("Executing node", {
+      executionId: this.config.executionId,
+      nodeId,
+      nodeType: nodeConfig.type,
+    });
 
     let updatedState = StateUtils.addStreamEvent(state, {
       type: "node_start",
@@ -432,6 +441,10 @@ export class AdvancedWorkflowBuilder {
       };
 
       const compiler = await this.compile();
+      logger.info("LangGraph workflow compiled successfully", {
+        executionId: this.config.executionId,
+        nodeCount: this.config.nodes.length,
+      });
 
       // Stream events if enabled
       if (this.config.enableStreaming) {
@@ -447,8 +460,26 @@ export class AdvancedWorkflowBuilder {
 
       // Execute graph with enhanced error handling
       let finalState: AgentStateType;
+      logger.info("Invoking LangGraph compiler", {
+        executionId: this.config.executionId,
+      });
       try {
-        finalState = await compiler.invoke(initialState);
+        const invokePromise = compiler.invoke(initialState);
+
+        // Add 30-second timeout for workflow execution
+        const timeoutPromise = new Promise<AgentStateType>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("Workflow execution timeout after 30s")),
+            30000,
+          ),
+        );
+
+        finalState = await Promise.race([invokePromise, timeoutPromise]);
+        logger.info("LangGraph compiler invocation completed", {
+          executionId: this.config.executionId,
+          status: finalState.status,
+          errorCount: finalState.errors?.length || 0,
+        });
       } catch (executionError) {
         // Log the execution error but don't fail completely
         logger.error("LangGraph execution error", {

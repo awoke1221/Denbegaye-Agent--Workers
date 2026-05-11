@@ -210,7 +210,7 @@ class DatabaseQueue {
   private processing = false;
   private dbProcessing = false;
   private redisProcessing = false;
-  private maxConcurrency = 5;
+  private maxConcurrency = 100;
   private processingJobs = new Set<string>();
   private started = false;
 
@@ -249,6 +249,11 @@ class DatabaseQueue {
   async start() {
     if (this.started) return;
     this.started = true;
+    logger.info("Agent queue start invoked", {
+      started: this.started,
+      redisEnabled: Boolean(redisClient),
+      maxConcurrency: this.maxConcurrency,
+    });
     if (redisClient) {
       void this.startRedisConsumer();
       void this.startProcessing();
@@ -264,26 +269,41 @@ class DatabaseQueue {
     logger.info("DB queue processor started", {
       maxConcurrency: this.maxConcurrency,
     });
+    logger.info("DB queue worker is alive and ready to fetch jobs");
     while (this.processing) {
       try {
         const now = new Date().toISOString();
-        const { data: jobs, error } = await supabase
+        const availableSlots = this.maxConcurrency - this.processingJobs.size;
+        logger.debug("Queue processor loop checking for jobs", {
+          availableSlots,
+          activeProcessingJobs: this.processingJobs.size,
+          now,
+        });
+        if (availableSlots <= 0) {
+          await this.delay(1000);
+          continue;
+        }
+
+        let query = supabase
           .from("job_queue")
           .select("*")
           .eq("status", "queued")
           .lte("scheduled_at", now)
-          .not(
-            "id",
-            "in",
-            `(${
-              Array.from(this.processingJobs)
-                .map((id) => `'${id}'`)
-                .join(",") || "null"
-            })`,
-          )
           .order("priority", { ascending: false })
-          .order("created_at", { ascending: true })
-          .limit(this.maxConcurrency - this.processingJobs.size);
+          .order("created_at", { ascending: true });
+
+        if (this.processingJobs.size > 0) {
+          const excludedIds = Array.from(this.processingJobs)
+            .map((id) => `'${id}'`)
+            .join(",");
+          query = query.not("id", "in", `(${excludedIds})`);
+        }
+
+        const { data: jobs, error } = await query.limit(availableSlots);
+        logger.debug("Fetched queued jobs from DB", {
+          jobCount: jobs?.length ?? 0,
+          availableSlots,
+        });
 
         if (error) {
           logger.error("Error fetching jobs:", error);
@@ -532,6 +552,12 @@ async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
   if (!userId) {
     throw new Error("Missing userId");
   }
+  logger.info("Processing queued job", {
+    jobId,
+    executionId,
+    userId,
+    agentId,
+  });
   const jobStartTime = Date.now();
   try {
     await updateExecutionStatus(executionId, "running", {
@@ -550,6 +576,12 @@ async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
       .eq("id", jobId);
 
     const decryptedApiKeys = JSON.parse(decryptValue(apiKeys));
+    logger.info("Starting workflow execution", {
+      executionId,
+      nodeCount: config?.nodes?.length || 0,
+      edgeCount: config?.edges?.length || 0,
+    });
+
     const result = await executeWorkflow(
       config?.nodes || [],
       config?.edges || [],
@@ -559,12 +591,19 @@ async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
       userId,
       {
         onNodeStart: (nodeId) => {
+          logger.debug("Node started", { executionId, nodeId });
           emitExecutionUpdate(executionId, {
             event: "node-started",
             nodeId,
           });
         },
         onNodeComplete: (nodeId, success, error) => {
+          logger.debug("Node completed", {
+            executionId,
+            nodeId,
+            success,
+            error,
+          });
           emitExecutionUpdate(executionId, {
             event: "node-completed",
             nodeId,
@@ -573,6 +612,11 @@ async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
           });
         },
         onExecutionComplete: (result: any) => {
+          logger.info("Workflow execution completed event", {
+            executionId,
+            success: result?.success,
+            hasOutput: !!result?.output,
+          });
           const success =
             typeof result === "boolean" ? result : result?.success || false;
           const partialSuccess =
@@ -601,6 +645,14 @@ async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
       },
     );
 
+    logger.info("Workflow execution returned", {
+      executionId,
+      success: result?.success,
+      hasErrors: (result?.errors?.length || 0) > 0,
+      errorCount: result?.errors?.length || 0,
+      nodeStatusCount: result?.nodeStatuses?.length || 0,
+    });
+
     const executionTime = Date.now() - jobStartTime;
 
     // Determine final status based on advanced execution result
@@ -621,6 +673,12 @@ async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
     } else {
       finalStatus = "failed";
     }
+
+    logger.info("Updating execution status to " + finalStatus, {
+      executionId,
+      finalStatus,
+      executionTime,
+    });
 
     await updateExecutionStatus(executionId, finalStatus, {
       result: finalResult,

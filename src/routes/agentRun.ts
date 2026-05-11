@@ -226,7 +226,7 @@ export const agentRunHandler = async (req: Request, res: Response) => {
       return res.status(429).json({ error: "System busy, try later" });
     }
 
-    // Check per-user running execution limit (max 5 concurrent running jobs)
+    // Check per-user running execution limit (max 100 concurrent running jobs)
     const { count: userRunningJobs, error: countError } = await supabase
       .from("agent_executions")
       .select("*", { count: "exact", head: true })
@@ -238,7 +238,7 @@ export const agentRunHandler = async (req: Request, res: Response) => {
       return res.status(500).json({ error: "Internal server error" });
     }
 
-    if ((userRunningJobs || 0) >= 5) {
+    if ((userRunningJobs || 0) >= 100) {
       return res.status(429).json({
         error:
           "Too many concurrent running executions. Wait for current jobs to finish.",

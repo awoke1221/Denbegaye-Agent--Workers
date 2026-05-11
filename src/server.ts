@@ -114,7 +114,11 @@ globalThis.webhookHandler = webhookHandler;
 setupRoutes(app, io);
 
 // Initialize queue worker
-initializeQueue();
+initializeQueue().catch((error) => {
+  logger.error("Queue initialization failed", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+});
 
 // Initialize workflow monitoring system
 workflowMonitoring.startMonitoring(60000); // Check every minute
