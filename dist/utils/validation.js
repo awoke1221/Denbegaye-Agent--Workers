@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.validateAgentGraph = exports.normalizeAgentEdges = exports.AgentEdgeInputSchema = void 0;
+exports.validateAgentGraph = exports.normalizeAgentEdges = exports.AgentEdgeInputSchema = exports.normalizeAgentNodes = void 0;
 const zod_1 = require("zod");
 const AgentNodeTypeSchema = zod_1.z.enum([
     "ai",
@@ -14,6 +14,7 @@ const AgentNodeTypeSchema = zod_1.z.enum([
     "ai-openai",
     "ai-gemini",
     "ai-deepseek",
+    "ai-google-gemini",
     "logic-if",
     "logic-delay",
     "logic-loop",
@@ -27,6 +28,11 @@ const AgentNodeTypeSchema = zod_1.z.enum([
     "action-facebook",
     "action-tiktok",
     "action-youtube",
+    "social-telegram",
+    "social-whatsapp",
+    "social-linkedin",
+    "social-facebook",
+    "social-youtube",
     "ai-reasoning",
     "ai-anthropic",
     "ai-groq",
@@ -36,6 +42,7 @@ const AgentNodeTypeSchema = zod_1.z.enum([
     "trigger-chat-message",
     "trigger-email",
     "trigger-gmail",
+    "trigger-google-sheets",
     "calendar-google",
     "data-google-sheets",
     "data-gmail",
@@ -47,11 +54,48 @@ const AgentNodeTypeSchema = zod_1.z.enum([
     "core-set",
     "core-transform",
 ]);
+const NODE_TYPE_ALIASES = {
+    "ai-google-gemini": "ai-gemini",
+    "social-telegram": "action-telegram",
+    "social-whatsapp": "action-whatsapp",
+    "social-linkedin": "action-linkedin",
+    "social-facebook": "action-facebook",
+    "social-youtube": "action-youtube",
+};
+const NODE_CONFIG_REQUIREMENTS = {
+    "ai-openai": ["apiKey", "model"],
+    "ai-gemini": ["apiKey", "model"],
+    "ai-anthropic": ["apiKey", "model"],
+    "ai-groq": ["apiKey", "model"],
+    "ai-deepseek": ["apiKey", "model"],
+    "core-http-request": ["url", "method"],
+    "action-email": ["to", "subject"],
+    "action-webhook": ["url"],
+    "action-telegram": ["botToken", "chatId"],
+    "action-whatsapp": ["accessToken", "phoneNumberId"],
+    "trigger-webhook": ["path"],
+    "trigger-schedule": ["cronExpression"],
+    "data-google-sheets": ["accessToken", "clientId", "clientSecret"],
+    "calendar-google": ["accessToken", "clientId", "clientSecret"],
+    "trigger-google-sheets": [
+        "accessToken",
+        "clientId",
+        "clientSecret",
+        "spreadsheetId",
+        "sheetName",
+    ],
+    // Add more as needed
+};
 const AgentNodeSchema = zod_1.z.object({
     id: zod_1.z.string().min(1),
     type: AgentNodeTypeSchema,
     config: zod_1.z.record(zod_1.z.any()).optional().default({}),
 });
+const normalizeAgentNodes = (nodes) => nodes.map((node) => ({
+    ...node,
+    config: node.config ?? node.data?.config ?? {},
+}));
+exports.normalizeAgentNodes = normalizeAgentNodes;
 exports.AgentEdgeInputSchema = zod_1.z
     .union([
     zod_1.z.object({ from: zod_1.z.string().min(1), to: zod_1.z.string().min(1) }),
@@ -81,13 +125,15 @@ const AgentGraphSchema = zod_1.z.object({
 const validateAgentGraph = (nodes, edges) => {
     // Normalize edges first
     const normalizedEdges = (0, exports.normalizeAgentEdges)(edges);
+    // Normalize nodes so frontend-style payloads with nested data.config are accepted
+    const normalizedNodes = (0, exports.normalizeAgentNodes)(nodes);
     // Only validate node-level execution requirements
-    const executionValidation = validateNodeExecutionRequirements(nodes, normalizedEdges);
+    const executionValidation = validateNodeExecutionRequirements(normalizedNodes, normalizedEdges);
     // Check for basic graph issues as warnings
-    const graphValidation = validateBasicGraphStructure(nodes, normalizedEdges);
+    const graphValidation = validateBasicGraphStructure(normalizedNodes, normalizedEdges);
     executionValidation.warnings.push(...graphValidation.warnings);
     // Always generate execution plan (even with warnings)
-    const executionPlan = generateExecutionPlan(nodes, normalizedEdges);
+    const executionPlan = generateExecutionPlan(normalizedNodes, normalizedEdges);
     const valid = executionValidation.valid;
     return {
         valid,
@@ -125,16 +171,33 @@ function validateNodeExecutionRequirements(nodes, edges) {
         warnings,
     };
 }
+const getCanonicalNodeType = (type) => NODE_TYPE_ALIASES[type] ?? type;
 function validateNodeConfig(node) {
     const errors = [];
     const warnings = [];
-    switch (node.type) {
+    const nodeType = getCanonicalNodeType(node.type);
+    // Check for required config fields
+    const requiredFields = NODE_CONFIG_REQUIREMENTS[nodeType];
+    if (requiredFields) {
+        requiredFields.forEach((field) => {
+            if (!node.config ||
+                node.config[field] === undefined ||
+                node.config[field] === null ||
+                node.config[field] === "") {
+                errors.push(`Node ${node.id} (${node.type}): Required config field '${field}' is missing or empty`);
+            }
+        });
+    }
+    switch (nodeType) {
         case "ai-openai":
         case "ai-gemini":
         case "ai-anthropic":
         case "ai-groq":
         case "ai-deepseek":
-            if (!node.config?.prompt && !node.config?.messages) {
+            if (!node.config?.prompt &&
+                !node.config?.messages &&
+                !node.config?.systemPrompt &&
+                !node.config?.inputText) {
                 errors.push(`Node ${node.id}: AI nodes require a prompt or messages configuration`);
             }
             if (!node.config?.model && !node.config?.apiKey) {
@@ -166,6 +229,34 @@ function validateNodeConfig(node) {
         case "trigger-schedule":
             if (!node.config?.cronExpression && !node.config?.interval) {
                 errors.push(`Node ${node.id}: Schedule trigger nodes require a cron expression or interval`);
+            }
+            break;
+        case "trigger-email":
+            if (!node.config?.email && !node.config?.emailAddress) {
+                errors.push(`Node ${node.id}: Email trigger nodes require an email address configuration`);
+            }
+            break;
+        case "trigger-google-sheets":
+            if (!node.config?.accessToken ||
+                !node.config?.clientId ||
+                !node.config?.clientSecret ||
+                !node.config?.spreadsheetId ||
+                !node.config?.sheetName) {
+                errors.push(`Node ${node.id}: Google Sheets trigger nodes require accessToken, clientId, clientSecret, spreadsheetId, and sheetName`);
+            }
+            break;
+        case "data-google-sheets":
+            if (!node.config?.accessToken ||
+                !node.config?.clientId ||
+                !node.config?.clientSecret) {
+                errors.push(`Node ${node.id}: Google Sheets nodes require accessToken, clientId, and clientSecret`);
+            }
+            break;
+        case "calendar-google":
+            if (!node.config?.accessToken ||
+                !node.config?.clientId ||
+                !node.config?.clientSecret) {
+                errors.push(`Node ${node.id}: Google Calendar nodes require accessToken, clientId, and clientSecret`);
             }
             break;
         case "core-code-js":

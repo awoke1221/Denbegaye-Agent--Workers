@@ -1,7 +1,11 @@
 import { Request, Response } from "express";
 import { supabase } from "../utils/supabaseClient";
 import { encryptValue } from "../utils/encryption";
-import { validateAgentGraph, normalizeAgentEdges } from "../utils/validation";
+import {
+  validateAgentGraph,
+  normalizeAgentEdges,
+  normalizeAgentNodes,
+} from "../utils/validation";
 import { agentQueue, agentRunSchema } from "../utils/agentQueue";
 import { logger } from "../utils/logger";
 import { createHash } from "crypto";
@@ -44,7 +48,25 @@ export const agentRunHandler = async (req: Request, res: Response) => {
     const userId = user.id;
     const body = req.body;
 
-    const parseResult = agentRunSchema.safeParse(body);
+    const normalizedBody = {
+      ...body,
+      agentId: body.agentId ?? body.agent_id,
+      executionId: body.executionId ?? body.execution_id,
+      input: body.input ?? body.inputs ?? {},
+      nodes: body.nodes ?? body.config?.nodes ?? body.configuration?.nodes,
+      edges: body.edges ?? body.config?.edges ?? body.configuration?.edges,
+      apiKeys:
+        body.apiKeys ??
+        body.api_keys ??
+        (body.apiKeysString ? JSON.parse(body.apiKeysString) : undefined) ??
+        (body.api_keys_string ? JSON.parse(body.api_keys_string) : undefined) ??
+        {},
+      agentName: body.agentName ?? body.agent_name,
+      saveAsAgent: body.saveAsAgent ?? body.save_as_agent,
+      isTemporary: body.isTemporary ?? body.is_temporary,
+    };
+
+    const parseResult = agentRunSchema.safeParse(normalizedBody);
     if (!parseResult.success) {
       const details = parseResult.error.errors.map((err) => ({
         field: err.path.join("."),
@@ -62,9 +84,14 @@ export const agentRunHandler = async (req: Request, res: Response) => {
       agentName,
       saveAsAgent = false, // NEW: Default to false - don't auto-save as new agent
       isTemporary = true, // NEW: Mark as temporary execution
+      executionId: providedExecutionId,
     } = parseResult.data;
 
-    const graphValidation = validateAgentGraph(nodes as any, edges as any);
+    const normalizedNodes = normalizeAgentNodes(nodes as any);
+    const graphValidation = validateAgentGraph(
+      normalizedNodes as any,
+      edges as any,
+    );
     if (!graphValidation.valid) {
       console.debug("Workflow graph failed validation", {
         errors: graphValidation.errors,
@@ -111,7 +138,7 @@ export const agentRunHandler = async (req: Request, res: Response) => {
         .insert({
           user_id: userId,
           name: agentName,
-          config: { nodes, edges: normalizedEdges },
+          config: { nodes: normalizedNodes, edges: normalizedEdges },
           status: "active",
           version: "1.0.0",
         })
@@ -183,38 +210,80 @@ export const agentRunHandler = async (req: Request, res: Response) => {
     }
 
     // For temporary executions, don't store agent_id to avoid foreign key conflicts
-    const executionData: any = {
-      user_id: userId,
-      idempotency_key: idempotencyKey,
-      status: "queued",
-      input_data: input,
-      started_at: new Date().toISOString(),
-    };
+    let executionId = providedExecutionId;
+    if (executionId) {
+      const { data: existingExecution, error: existingExecError } =
+        await supabase
+          .from("agent_executions")
+          .select("id, user_id, status")
+          .eq("id", executionId)
+          .single();
 
-    // Only include agent_id if it's not a temporary ID
-    if (!agentId.startsWith("temp_")) {
-      executionData.agent_id = agentId;
+      if (
+        existingExecError ||
+        !existingExecution ||
+        existingExecution.user_id !== userId
+      ) {
+        return res
+          .status(404)
+          .json({ error: "Execution not found or access denied" });
+      }
+
+      if (existingExecution.status === "completed") {
+        return res.status(400).json({ error: "Execution already completed" });
+      }
+
+      const updateResult = await supabase
+        .from("agent_executions")
+        .update({
+          status: "queued",
+          started_at: null,
+          completed_at: null,
+          error_message: null,
+          input_data: input,
+        })
+        .eq("id", executionId);
+
+      if (updateResult.error) {
+        return res.status(500).json({
+          error: "Failed to update existing execution",
+          details: updateResult.error.message,
+        });
+      }
     } else {
-      executionData.agent_id = null;
+      const executionData: any = {
+        user_id: userId,
+        idempotency_key: idempotencyKey,
+        status: "queued",
+        input_data: input,
+        started_at: new Date().toISOString(),
+      };
+
+      // Only include agent_id if it's not a temporary ID
+      if (!agentId.startsWith("temp_")) {
+        executionData.agent_id = agentId;
+      } else {
+        executionData.agent_id = null;
+      }
+
+      const executionInsert = await supabase
+        .from("agent_executions")
+        .insert(executionData)
+        .select("id")
+        .single();
+
+      if (executionInsert.error || !executionInsert.data?.id) {
+        console.error("Execution insert error:", executionInsert.error);
+        return res.status(500).json({
+          error: "Failed to create execution record",
+          details:
+            executionInsert.error?.message ||
+            JSON.stringify(executionInsert.error),
+        });
+      }
+
+      executionId = executionInsert.data.id;
     }
-
-    const executionInsert = await supabase
-      .from("agent_executions")
-      .insert(executionData)
-      .select("id")
-      .single();
-
-    if (executionInsert.error || !executionInsert.data?.id) {
-      console.error("Execution insert error:", executionInsert.error);
-      return res.status(500).json({
-        error: "Failed to create execution record",
-        details:
-          executionInsert.error?.message ||
-          JSON.stringify(executionInsert.error),
-      });
-    }
-
-    const executionId = executionInsert.data.id;
 
     if (isTemporary || agentId.startsWith("temp_")) {
       const tempUpdate = await supabase
@@ -243,10 +312,10 @@ export const agentRunHandler = async (req: Request, res: Response) => {
       job = await agentQueue.add(
         {
           agentId,
-          nodes,
+          nodes: normalizedNodes,
           userId,
           input: input || {},
-          config: { nodes, edges: normalizedEdges },
+          config: { nodes: normalizedNodes, edges: normalizedEdges },
           apiKeys: encryptedApiKeys,
           executionId,
         },

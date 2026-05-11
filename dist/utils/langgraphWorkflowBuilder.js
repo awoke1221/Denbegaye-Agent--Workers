@@ -111,6 +111,13 @@ class AdvancedWorkflowBuilder {
             },
         };
         try {
+            // Emit node start stream event immediately before execution begins
+            this.emitStreamEvent({
+                type: "node_start",
+                nodeId,
+                data: { config: nodeConfig.config },
+                timestamp: startTime,
+            });
             // Prepare node input
             const nodeInput = this.prepareNodeInput(state, nodeConfig);
             // Execute the node tool
@@ -360,9 +367,9 @@ class AdvancedWorkflowBuilder {
             const errorMessage = error.message;
             logger_1.logger.error("Workflow execution failed", { error: errorMessage });
             this.emitStreamEvent({
-                type: "execution_error",
+                type: "execution_complete",
                 timestamp: new Date(),
-                data: { error: errorMessage },
+                data: { success: false, error: errorMessage },
             });
             throw error;
         }

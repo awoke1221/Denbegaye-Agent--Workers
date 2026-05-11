@@ -13,6 +13,7 @@ const AgentNodeTypeSchema = z.enum([
   "ai-openai",
   "ai-gemini",
   "ai-deepseek",
+  "ai-google-gemini",
   "logic-if",
   "logic-delay",
   "logic-loop",
@@ -26,6 +27,11 @@ const AgentNodeTypeSchema = z.enum([
   "action-facebook",
   "action-tiktok",
   "action-youtube",
+  "social-telegram",
+  "social-whatsapp",
+  "social-linkedin",
+  "social-facebook",
+  "social-youtube",
   "ai-reasoning",
   "ai-anthropic",
   "ai-groq",
@@ -35,6 +41,7 @@ const AgentNodeTypeSchema = z.enum([
   "trigger-chat-message",
   "trigger-email",
   "trigger-gmail",
+  "trigger-google-sheets",
   "calendar-google",
   "data-google-sheets",
   "data-gmail",
@@ -47,11 +54,58 @@ const AgentNodeTypeSchema = z.enum([
   "core-transform",
 ]);
 
+const NODE_TYPE_ALIASES: Record<string, string> = {
+  "ai-google-gemini": "ai-gemini",
+  "social-telegram": "action-telegram",
+  "social-whatsapp": "action-whatsapp",
+  "social-linkedin": "action-linkedin",
+  "social-facebook": "action-facebook",
+  "social-youtube": "action-youtube",
+};
+
+const NODE_CONFIG_REQUIREMENTS: Record<string, string[]> = {
+  "ai-openai": ["apiKey", "model"],
+  "ai-gemini": ["apiKey", "model"],
+  "ai-anthropic": ["apiKey", "model"],
+  "ai-groq": ["apiKey", "model"],
+  "ai-deepseek": ["apiKey", "model"],
+  "core-http-request": ["url", "method"],
+  "action-email": ["to", "subject"],
+  "action-webhook": ["url"],
+  "action-telegram": ["botToken", "chatId"],
+  "action-whatsapp": ["accessToken", "phoneNumberId"],
+  "trigger-webhook": ["path"],
+  "trigger-schedule": ["cronExpression"],
+  "data-google-sheets": ["accessToken", "clientId", "clientSecret"],
+  "calendar-google": ["accessToken", "clientId", "clientSecret"],
+  "trigger-google-sheets": [
+    "accessToken",
+    "clientId",
+    "clientSecret",
+    "spreadsheetId",
+    "sheetName",
+  ],
+  // Add more as needed
+};
+
 const AgentNodeSchema = z.object({
   id: z.string().min(1),
   type: AgentNodeTypeSchema,
   config: z.record(z.any()).optional().default({}),
 });
+
+export const normalizeAgentNodes = (
+  nodes: Array<
+    AgentNode & { data?: { config?: Record<string, any> } } & Record<
+        string,
+        any
+      >
+  >,
+): AgentNode[] =>
+  nodes.map((node) => ({
+    ...node,
+    config: node.config ?? node.data?.config ?? {},
+  }));
 
 export interface AgentEdgeInput {
   from?: string;
@@ -113,18 +167,24 @@ export const validateAgentGraph = (
   // Normalize edges first
   const normalizedEdges = normalizeAgentEdges(edges);
 
+  // Normalize nodes so frontend-style payloads with nested data.config are accepted
+  const normalizedNodes = normalizeAgentNodes(nodes as any);
+
   // Only validate node-level execution requirements
   const executionValidation = validateNodeExecutionRequirements(
-    nodes,
+    normalizedNodes,
     normalizedEdges,
   );
 
   // Check for basic graph issues as warnings
-  const graphValidation = validateBasicGraphStructure(nodes, normalizedEdges);
+  const graphValidation = validateBasicGraphStructure(
+    normalizedNodes,
+    normalizedEdges,
+  );
   executionValidation.warnings.push(...graphValidation.warnings);
 
   // Always generate execution plan (even with warnings)
-  const executionPlan = generateExecutionPlan(nodes, normalizedEdges);
+  const executionPlan = generateExecutionPlan(normalizedNodes, normalizedEdges);
   const valid = executionValidation.valid;
 
   return {
@@ -180,20 +240,46 @@ function validateNodeExecutionRequirements(
   };
 }
 
+const getCanonicalNodeType = (type: string): string =>
+  NODE_TYPE_ALIASES[type] ?? type;
+
 function validateNodeConfig(node: AgentNode): {
   errors: string[];
   warnings: string[];
 } {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const nodeType = getCanonicalNodeType(node.type);
 
-  switch (node.type) {
+  // Check for required config fields
+  const requiredFields = NODE_CONFIG_REQUIREMENTS[nodeType];
+  if (requiredFields) {
+    requiredFields.forEach((field) => {
+      if (
+        !node.config ||
+        node.config[field] === undefined ||
+        node.config[field] === null ||
+        node.config[field] === ""
+      ) {
+        errors.push(
+          `Node ${node.id} (${node.type}): Required config field '${field}' is missing or empty`,
+        );
+      }
+    });
+  }
+
+  switch (nodeType) {
     case "ai-openai":
     case "ai-gemini":
     case "ai-anthropic":
     case "ai-groq":
     case "ai-deepseek":
-      if (!node.config?.prompt && !node.config?.messages) {
+      if (
+        !node.config?.prompt &&
+        !node.config?.messages &&
+        !node.config?.systemPrompt &&
+        !node.config?.inputText
+      ) {
         errors.push(
           `Node ${node.id}: AI nodes require a prompt or messages configuration`,
         );
@@ -244,6 +330,52 @@ function validateNodeConfig(node: AgentNode): {
       if (!node.config?.cronExpression && !node.config?.interval) {
         errors.push(
           `Node ${node.id}: Schedule trigger nodes require a cron expression or interval`,
+        );
+      }
+      break;
+
+    case "trigger-email":
+      if (!node.config?.email && !node.config?.emailAddress) {
+        errors.push(
+          `Node ${node.id}: Email trigger nodes require an email address configuration`,
+        );
+      }
+      break;
+
+    case "trigger-google-sheets":
+      if (
+        !node.config?.accessToken ||
+        !node.config?.clientId ||
+        !node.config?.clientSecret ||
+        !node.config?.spreadsheetId ||
+        !node.config?.sheetName
+      ) {
+        errors.push(
+          `Node ${node.id}: Google Sheets trigger nodes require accessToken, clientId, clientSecret, spreadsheetId, and sheetName`,
+        );
+      }
+      break;
+
+    case "data-google-sheets":
+      if (
+        !node.config?.accessToken ||
+        !node.config?.clientId ||
+        !node.config?.clientSecret
+      ) {
+        errors.push(
+          `Node ${node.id}: Google Sheets nodes require accessToken, clientId, and clientSecret`,
+        );
+      }
+      break;
+
+    case "calendar-google":
+      if (
+        !node.config?.accessToken ||
+        !node.config?.clientId ||
+        !node.config?.clientSecret
+      ) {
+        errors.push(
+          `Node ${node.id}: Google Calendar nodes require accessToken, clientId, and clientSecret`,
         );
       }
       break;

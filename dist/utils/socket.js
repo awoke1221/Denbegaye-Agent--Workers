@@ -1,10 +1,15 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.emitSocketEvent = void 0;
-const emitSocketEvent = (event, data) => {
+const emitSocketEvent = (event, data, room) => {
     if (typeof globalThis.io !== "undefined") {
         try {
-            globalThis.io.emit(event, data);
+            if (room) {
+                globalThis.io.to(room).emit(event, data);
+            }
+            else {
+                globalThis.io.emit(event, data);
+            }
         }
         catch (error) {
             console.error(`Failed to emit socket event ${event}:`, error);

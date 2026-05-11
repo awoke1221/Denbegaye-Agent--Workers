@@ -678,7 +678,7 @@ export class AdvancedWorkflowExecutor {
     // Persist execution state for monitoring and debugging
     await this.persistExecutionState(overallSuccess, partialSuccess);
 
-    options?.onExecutionComplete?.(overallSuccess, partialSuccess);
+    options?.onExecutionComplete?.({ success: overallSuccess, partialSuccess });
 
     return {
       success: overallSuccess,
@@ -846,7 +846,7 @@ export async function executeWorkflow(
   options?: {
     onNodeStart?: (nodeId: string) => void;
     onNodeComplete?: (nodeId: string, success: boolean, error?: string) => void;
-    onExecutionComplete?: (success: boolean) => void;
+    onExecutionComplete?: (result: any) => void;
     onCompensationStart?: (nodeId: string) => void;
     onCompensationComplete?: (nodeId: string, success: boolean) => void;
   },
@@ -918,7 +918,9 @@ export async function executeWorkflow(
           event.type === "execution_complete" &&
           options.onExecutionComplete
         ) {
-          options.onExecutionComplete(event.data?.status === "completed");
+          const success =
+            event.data?.status === "completed" || event.data?.success === true;
+          options.onExecutionComplete({ success });
         }
       });
     }
@@ -961,7 +963,7 @@ export async function executeWorkflow(
 
       // Call execution complete callback for advanced executor
       if (options?.onExecutionComplete) {
-        options.onExecutionComplete(result as any);
+        options.onExecutionComplete(result);
       }
     }
 
@@ -1145,7 +1147,7 @@ async function executeWorkflowFallback(
   options?: {
     onNodeStart?: (nodeId: string) => void;
     onNodeComplete?: (nodeId: string, success: boolean, error?: string) => void;
-    onExecutionComplete?: (success: boolean) => void;
+    onExecutionComplete?: (result: any) => void;
   },
 ): Promise<{
   success: boolean;
@@ -1231,7 +1233,7 @@ async function executeWorkflowFallback(
       }
     }
 
-    options?.onExecutionComplete?.(errors.length === 0);
+    options?.onExecutionComplete?.({ success: errors.length === 0 });
 
     return {
       success: errors.length === 0,

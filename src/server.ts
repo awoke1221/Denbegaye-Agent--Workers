@@ -4,8 +4,10 @@ import helmet from "helmet";
 import dotenv from "dotenv";
 import { createServer } from "http";
 import { Server } from "socket.io";
+import Redis from "ioredis";
 import { initializeQueue } from "./index";
 import { logger } from "./utils/logger";
+import { emitSocketEvent } from "./utils/socket";
 import { setupRoutes } from "./routes";
 import { WebhookHandler } from "./nodes/triggers/webhook";
 import { workflowMonitoring } from "./utils/workflowMonitoring";
@@ -28,6 +30,49 @@ const io = new Server(server, {
   },
 });
 const PORT = process.env.PORT || 3001;
+
+const EXECUTION_EVENTS_CHANNEL = "agent_execution_events";
+const redisSubscriber = process.env.REDIS_URL
+  ? new Redis(process.env.REDIS_URL)
+  : null;
+
+if (redisSubscriber) {
+  redisSubscriber.on("ready", () => {
+    logger.info("Redis subscriber connected for execution events");
+  });
+  redisSubscriber.on("error", (error) => {
+    logger.error("Redis subscriber error", { error });
+  });
+  redisSubscriber
+    .subscribe(EXECUTION_EVENTS_CHANNEL)
+    .then(() => {
+      logger.info(`Subscribed to Redis channel ${EXECUTION_EVENTS_CHANNEL}`);
+    })
+    .catch((error) => {
+      logger.error("Failed to subscribe to Redis execution event channel", {
+        error,
+      });
+    });
+
+  redisSubscriber.on("message", (channel, message) => {
+    if (channel !== EXECUTION_EVENTS_CHANNEL) return;
+    try {
+      const payload = JSON.parse(message);
+      if (payload?.executionId) {
+        emitSocketEvent(
+          "execution:update",
+          payload,
+          `execution:${payload.executionId}`,
+        );
+      }
+    } catch (error) {
+      logger.error("Failed to parse execution event payload", {
+        error,
+        message,
+      });
+    }
+  });
+}
 
 // Initialize webhook handler
 const webhookHandler = new WebhookHandler(app);

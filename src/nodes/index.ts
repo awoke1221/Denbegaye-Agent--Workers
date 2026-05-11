@@ -233,8 +233,10 @@ const groqHandler = async (context: any) => {
 const geminiHandler = async (context: any) => {
   const apiKey = context.config?.apiKey || context.apiKeys?.gemini;
   const model = context.config?.model || "gemini-1.5-pro";
-  const systemMessage = context.config?.systemMessage || "";
+  const systemMessage =
+    context.config?.systemPrompt || context.config?.systemMessage || "";
   const prompt =
+    context.config?.inputText ||
     context.config?.prompt ||
     context.input?.prompt ||
     context.input?.text ||
@@ -516,6 +518,11 @@ const builtInNodes = [
   ),
   createNodeDefinition("ai-groq", groqHandler, "Groq LLM compatible node"),
   createNodeDefinition("ai-gemini", geminiHandler, "Google Gemini AI node"),
+  createNodeDefinition(
+    "ai-google-gemini",
+    geminiHandler,
+    "Google Gemini AI node alias for frontend",
+  ),
   createNodeDefinition("ai-deepseek", deepseekHandler, "DeepSeek AI node"),
   createNodeDefinition("ai-reasoning", aiHandler, "Reasoning AI node"),
 
@@ -562,9 +569,19 @@ const builtInNodes = [
     "Telegram action node",
   ),
   createNodeDefinition(
+    "social-telegram",
+    actionHandler,
+    "Telegram social node alias for frontend",
+  ),
+  createNodeDefinition(
     "action-linkedin",
     actionHandler,
     "LinkedIn action node",
+  ),
+  createNodeDefinition(
+    "social-linkedin",
+    actionHandler,
+    "LinkedIn social node alias for frontend",
   ),
   createNodeDefinition(
     "action-facebook",
@@ -572,17 +589,37 @@ const builtInNodes = [
     "Facebook action node",
   ),
   createNodeDefinition(
+    "social-facebook",
+    actionHandler,
+    "Facebook social node alias for frontend",
+  ),
+  createNodeDefinition(
     "action-whatsapp",
     actionHandler,
     "WhatsApp action node",
   ),
+  createNodeDefinition(
+    "social-whatsapp",
+    actionHandler,
+    "WhatsApp social node alias for frontend",
+  ),
   createNodeDefinition("action-tiktok", actionHandler, "TikTok action node"),
   createNodeDefinition("action-youtube", actionHandler, "YouTube action node"),
+  createNodeDefinition(
+    "social-youtube",
+    actionHandler,
+    "YouTube social node alias for frontend",
+  ),
   createNodeDefinition("calendar-google", coreHandler, "Google Calendar node"),
   createNodeDefinition(
     "data-google-sheets",
     coreHandler,
     "Google Sheets data node",
+  ),
+  createNodeDefinition(
+    "trigger-google-sheets",
+    triggerHandler,
+    "Google Sheets trigger node alias for frontend",
   ),
   createNodeDefinition("data-gmail", actionHandler, "Google Gmail node"),
 

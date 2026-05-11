@@ -14,9 +14,47 @@ const socket_1 = require("./socket");
 const validation_1 = require("./validation");
 const REDIS_URL = process.env.REDIS_URL;
 const REDIS_QUEUE_KEY = "agent_execution_queue";
-const redisClient = REDIS_URL ? new ioredis_1.default(REDIS_URL) : null;
+let redisClient = null;
+let redisConnected = false;
+let redisReconnectAttempt = 0;
+console.info("[Redis] Initialization:", REDIS_URL ? "REDIS_URL is set" : "REDIS_URL not set - using database queue only");
+if (REDIS_URL) {
+    redisClient = new ioredis_1.default(REDIS_URL);
+    console.info("[Redis] Creating connection to:", REDIS_URL.replace(/:[^@]*@/, ":***@")); // Mask password
+    redisClient.on("connect", () => {
+        console.info("Redis client connecting...");
+    });
+    redisClient.on("ready", () => {
+        if (!redisConnected) {
+            console.info(`Redis queue reconnected after ${redisReconnectAttempt} attempt${redisReconnectAttempt === 1 ? "" : "s"}`);
+        }
+        else {
+            console.info("Redis queue connected");
+        }
+        redisConnected = true;
+        redisReconnectAttempt = 0;
+    });
+    redisClient.on("reconnecting", (delay) => {
+        redisReconnectAttempt += 1;
+        redisConnected = false;
+        console.warn(`Redis reconnect attempt ${redisReconnectAttempt} scheduled in ${delay}ms`);
+    });
+    redisClient.on("error", (error) => {
+        redisConnected = false;
+        console.error("Redis client error:", error);
+    });
+    redisClient.on("end", () => {
+        redisConnected = false;
+        console.warn("Redis client connection ended");
+    });
+    redisClient.on("close", () => {
+        redisConnected = false;
+        console.warn("Redis client connection closed");
+    });
+}
+const EXECUTION_EVENTS_CHANNEL = "agent_execution_events";
 async function publishJobToRedis(jobId, jobData) {
-    if (!redisClient)
+    if (!redisClient || !redisConnected)
         return;
     try {
         await redisClient.lpush(REDIS_QUEUE_KEY, JSON.stringify({ jobId, ...jobData }));
@@ -25,19 +63,48 @@ async function publishJobToRedis(jobId, jobData) {
         console.error("Failed to publish job to Redis queue:", error);
     }
 }
-async function reserveAgentQueueJob(timeoutSeconds = 30) {
-    if (!redisClient) {
-        throw new Error("Redis queue is not configured. Set REDIS_URL to enable worker queueing.");
-    }
-    const result = await redisClient.brpop(REDIS_QUEUE_KEY, timeoutSeconds);
-    if (!result)
-        return null;
-    const [, payload] = result;
+async function publishExecutionEvent(eventData) {
+    if (!redisClient || !redisConnected)
+        return;
     try {
-        return JSON.parse(payload);
+        await redisClient.publish(EXECUTION_EVENTS_CHANNEL, JSON.stringify(eventData));
     }
     catch (error) {
-        console.error("Failed to parse Redis queue payload:", error);
+        console.error("Failed to publish execution event:", error);
+    }
+}
+function emitExecutionUpdate(executionId, payload) {
+    const eventPayload = {
+        ...payload,
+        executionId,
+        timestamp: new Date().toISOString(),
+    };
+    if (redisClient && redisConnected) {
+        void publishExecutionEvent(eventPayload);
+    }
+    else {
+        (0, socket_1.emitSocketEvent)("execution:update", eventPayload, `execution:${executionId}`);
+    }
+}
+async function reserveAgentQueueJob(timeoutSeconds = 30) {
+    if (!redisClient || !redisConnected) {
+        return null;
+    }
+    try {
+        const result = await redisClient.brpop(REDIS_QUEUE_KEY, timeoutSeconds);
+        if (!result)
+            return null;
+        const [, payload] = result;
+        try {
+            return JSON.parse(payload);
+        }
+        catch (error) {
+            console.error("Failed to parse Redis queue payload:", error);
+            return null;
+        }
+    }
+    catch (error) {
+        console.error("Redis brpop error:", error);
         return null;
     }
 }
@@ -342,6 +409,7 @@ exports.agentRunSchema = zod_1.z
     edges: zod_1.z.array(validation_1.AgentEdgeInputSchema).optional().default([]),
     input: zod_1.z.record(zod_1.z.any()).optional().default({}),
     apiKeys: zod_1.z.record(zod_1.z.any()).optional().default({}),
+    executionId: zod_1.z.string().optional(),
     agentName: zod_1.z.string().min(1).optional().default("Unnamed Agent"),
     saveAsAgent: zod_1.z.boolean().optional().default(false), // NEW: Only save as agent if explicitly requested
     isTemporary: zod_1.z.boolean().optional().default(true), // NEW: Mark execution as temporary
@@ -371,7 +439,10 @@ async function processJobFunction(jobData, jobId) {
         await updateExecutionStatus(executionId, "running", {
             started_at: new Date().toISOString(),
         });
-        (0, socket_1.emitSocketEvent)("execution-started", { executionId });
+        emitExecutionUpdate(executionId, {
+            event: "execution-started",
+            status: "running",
+        });
         await supabaseClient_1.supabase
             .from("job_queue")
             .update({
@@ -382,31 +453,39 @@ async function processJobFunction(jobData, jobId) {
         const decryptedApiKeys = JSON.parse((0, encryption_1.decryptValue)(apiKeys));
         const result = await (0, agentEngine_1.executeWorkflow)(config?.nodes || [], config?.edges || [], input ?? {}, decryptedApiKeys, executionId, userId, {
             onNodeStart: (nodeId) => {
-                (0, socket_1.emitSocketEvent)("node-started", { executionId, nodeId });
+                emitExecutionUpdate(executionId, {
+                    event: "node-started",
+                    nodeId,
+                });
             },
             onNodeComplete: (nodeId, success, error) => {
-                (0, socket_1.emitSocketEvent)("node-completed", {
-                    executionId,
+                emitExecutionUpdate(executionId, {
+                    event: "node-completed",
                     nodeId,
                     success,
                     error,
                 });
             },
             onExecutionComplete: (result) => {
-                const success = typeof result === 'boolean' ? result : result?.success || false;
-                const partialSuccess = typeof result === 'object' ? result?.partialSuccess || false : false;
-                (0, socket_1.emitSocketEvent)("execution-completed", {
-                    executionId,
+                const success = typeof result === "boolean" ? result : result?.success || false;
+                const partialSuccess = typeof result === "object"
+                    ? result?.partialSuccess || false
+                    : false;
+                emitExecutionUpdate(executionId, {
+                    event: "execution-completed",
                     success,
                     partialSuccess,
                 });
             },
             onCompensationStart: (nodeId) => {
-                (0, socket_1.emitSocketEvent)("compensation-started", { executionId, nodeId });
+                emitExecutionUpdate(executionId, {
+                    event: "compensation-started",
+                    nodeId,
+                });
             },
             onCompensationComplete: (nodeId, success) => {
-                (0, socket_1.emitSocketEvent)("compensation-completed", {
-                    executionId,
+                emitExecutionUpdate(executionId, {
+                    event: "compensation-completed",
                     nodeId,
                     success,
                 });
@@ -458,8 +537,8 @@ async function processJobFunction(jobData, jobId) {
         const executionTime = Date.now() - jobStartTime;
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.error(`Job processing failed for ${executionId}:`, error);
-        (0, socket_1.emitSocketEvent)("execution-completed", {
-            executionId,
+        emitExecutionUpdate(executionId, {
+            event: "execution-completed",
             success: false,
             error: errorMessage,
         });

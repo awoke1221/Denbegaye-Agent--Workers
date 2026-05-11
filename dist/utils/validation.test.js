@@ -19,6 +19,25 @@ const validation_1 = require("./validation");
         (0, vitest_1.expect)(() => (0, validation_1.normalizeAgentEdges)(edges)).toThrow("Edges must include");
     });
 });
+(0, vitest_1.describe)("normalizeAgentNodes", () => {
+    (0, vitest_1.it)("extracts config from node.data.config when top-level config is missing", () => {
+        const nodes = [
+            {
+                id: "node1",
+                type: "ai-openai",
+                data: { config: { apiKey: "key", model: "gpt-4", prompt: "Hello" } },
+            },
+        ];
+        const result = (0, validation_1.normalizeAgentNodes)(nodes);
+        (0, vitest_1.expect)(result).toHaveLength(1);
+        (0, vitest_1.expect)(result[0]).toMatchObject({
+            id: "node1",
+            type: "ai-openai",
+            config: { apiKey: "key", model: "gpt-4", prompt: "Hello" },
+        });
+        (0, vitest_1.expect)(result[0].data).toEqual(nodes[0].data);
+    });
+});
 (0, vitest_1.describe)("validateAgentGraph", () => {
     (0, vitest_1.it)("validates a simple valid graph", () => {
         const nodes = [

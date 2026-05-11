@@ -444,7 +444,7 @@ class AdvancedWorkflowExecutor {
         }
         // Persist execution state for monitoring and debugging
         await this.persistExecutionState(overallSuccess, partialSuccess);
-        options?.onExecutionComplete?.(overallSuccess, partialSuccess);
+        options?.onExecutionComplete?.({ success: overallSuccess, partialSuccess });
         return {
             success: overallSuccess,
             partialSuccess,
@@ -624,7 +624,8 @@ async function executeWorkflow(nodes, edges, input, apiKeys, executionId, userId
                 }
                 else if (event.type === "execution_complete" &&
                     options.onExecutionComplete) {
-                    options.onExecutionComplete(event.data?.status === "completed");
+                    const success = event.data?.status === "completed" || event.data?.success === true;
+                    options.onExecutionComplete({ success });
                 }
             });
         }
@@ -863,7 +864,7 @@ async function executeWorkflowFallback(nodes, edges, input, apiKeys, options) {
                 };
             }
         }
-        options?.onExecutionComplete?.(errors.length === 0);
+        options?.onExecutionComplete?.({ success: errors.length === 0 });
         return {
             success: errors.length === 0,
             output: variables,
