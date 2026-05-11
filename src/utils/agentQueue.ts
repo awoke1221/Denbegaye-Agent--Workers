@@ -394,6 +394,7 @@ class DatabaseQueue {
       try {
         const payload = await reserveAgentQueueJob(30);
         if (!payload) {
+          await this.delay(2000);
           continue;
         }
         await this.processRedisPayload(payload);

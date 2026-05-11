@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { validateAgentGraph, normalizeAgentEdges } from "./validation";
+import {
+  validateAgentGraph,
+  normalizeAgentEdges,
+  normalizeAgentNodes,
+} from "./validation";
 import { AgentEdge, AgentNode } from "../jobs/types";
 
 describe("normalizeAgentEdges", () => {
@@ -22,6 +26,28 @@ describe("normalizeAgentEdges", () => {
     expect(() => normalizeAgentEdges(edges as any)).toThrow(
       "Edges must include",
     );
+  });
+});
+
+describe("normalizeAgentNodes", () => {
+  it("extracts config from node.data.config when top-level config is missing", () => {
+    const nodes = [
+      {
+        id: "node1",
+        type: "ai-openai",
+        data: { config: { apiKey: "key", model: "gpt-4", prompt: "Hello" } },
+      },
+    ];
+
+    const result = normalizeAgentNodes(nodes as any);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      id: "node1",
+      type: "ai-openai",
+      config: { apiKey: "key", model: "gpt-4", prompt: "Hello" },
+    });
+    expect((result[0] as any).data).toEqual(nodes[0].data);
   });
 });
 

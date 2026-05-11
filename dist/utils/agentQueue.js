@@ -17,10 +17,8 @@ const REDIS_QUEUE_KEY = "agent_execution_queue";
 let redisClient = null;
 let redisConnected = false;
 let redisReconnectAttempt = 0;
-console.info("[Redis] Initialization:", REDIS_URL ? "REDIS_URL is set" : "REDIS_URL not set - using database queue only");
 if (REDIS_URL) {
     redisClient = new ioredis_1.default(REDIS_URL);
-    console.info("[Redis] Creating connection to:", REDIS_URL.replace(/:[^@]*@/, ":***@")); // Mask password
     redisClient.on("connect", () => {
         console.info("Redis client connecting...");
     });

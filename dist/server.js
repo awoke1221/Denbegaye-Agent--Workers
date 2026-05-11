@@ -9,8 +9,10 @@ const helmet_1 = __importDefault(require("helmet"));
 const dotenv_1 = __importDefault(require("dotenv"));
 const http_1 = require("http");
 const socket_io_1 = require("socket.io");
+const ioredis_1 = __importDefault(require("ioredis"));
 const index_1 = require("./index");
 const logger_1 = require("./utils/logger");
+const socket_1 = require("./utils/socket");
 const routes_1 = require("./routes");
 const webhook_1 = require("./nodes/triggers/webhook");
 const workflowMonitoring_1 = require("./utils/workflowMonitoring");
@@ -25,6 +27,44 @@ const io = new socket_io_1.Server(server, {
     },
 });
 const PORT = process.env.PORT || 3001;
+const EXECUTION_EVENTS_CHANNEL = "agent_execution_events";
+const redisSubscriber = process.env.REDIS_URL
+    ? new ioredis_1.default(process.env.REDIS_URL)
+    : null;
+if (redisSubscriber) {
+    redisSubscriber.on("ready", () => {
+        logger_1.logger.info("Redis subscriber connected for execution events");
+    });
+    redisSubscriber.on("error", (error) => {
+        logger_1.logger.error("Redis subscriber error", { error });
+    });
+    redisSubscriber
+        .subscribe(EXECUTION_EVENTS_CHANNEL)
+        .then(() => {
+        logger_1.logger.info(`Subscribed to Redis channel ${EXECUTION_EVENTS_CHANNEL}`);
+    })
+        .catch((error) => {
+        logger_1.logger.error("Failed to subscribe to Redis execution event channel", {
+            error,
+        });
+    });
+    redisSubscriber.on("message", (channel, message) => {
+        if (channel !== EXECUTION_EVENTS_CHANNEL)
+            return;
+        try {
+            const payload = JSON.parse(message);
+            if (payload?.executionId) {
+                (0, socket_1.emitSocketEvent)("execution:update", payload, `execution:${payload.executionId}`);
+            }
+        }
+        catch (error) {
+            logger_1.logger.error("Failed to parse execution event payload", {
+                error,
+                message,
+            });
+        }
+    });
+}
 // Initialize webhook handler
 const webhookHandler = new webhook_1.WebhookHandler(app);
 // Middleware
