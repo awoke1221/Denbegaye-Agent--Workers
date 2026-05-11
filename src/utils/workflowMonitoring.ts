@@ -155,6 +155,11 @@ export class WorkflowMonitoringSystem {
   ): Promise<WorkflowHealthMetrics> {
     const timeRange = new Date(Date.now() - timeRangeHours * 60 * 60 * 1000);
 
+    logger.debug("Starting health metrics calculation", {
+      timeRangeHours,
+      timeRange: timeRange.toISOString(),
+    });
+
     try {
       // Get execution statistics. Some schema versions may not yet include optional columns.
       const executionSelect =

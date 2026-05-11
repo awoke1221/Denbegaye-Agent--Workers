@@ -4,6 +4,7 @@ import { supabase } from "./supabaseClient";
 import { decryptValue } from "./encryption";
 import { executeWorkflow } from "./agentEngine";
 import { emitSocketEvent } from "./socket";
+import { logger } from "./logger";
 import { AgentEdgeInputSchema } from "./validation";
 
 const REDIS_URL = process.env.REDIS_URL;
@@ -260,13 +261,17 @@ class DatabaseQueue {
     if (this.dbProcessing) return;
     this.dbProcessing = true;
     this.processing = true;
+    logger.info("DB queue processor started", {
+      maxConcurrency: this.maxConcurrency,
+    });
     while (this.processing) {
       try {
+        const now = new Date().toISOString();
         const { data: jobs, error } = await supabase
           .from("job_queue")
           .select("*")
           .eq("status", "queued")
-          .lt("scheduled_at", new Date().toISOString())
+          .lte("scheduled_at", now)
           .not(
             "id",
             "in",
@@ -281,11 +286,15 @@ class DatabaseQueue {
           .limit(this.maxConcurrency - this.processingJobs.size);
 
         if (error) {
-          console.error("Error fetching jobs:", error);
+          logger.error("Error fetching jobs:", error);
           await this.delay(5000);
           continue;
         }
         if (!jobs || jobs.length === 0) {
+          logger.debug("No ready jobs found in queue", {
+            waitingCount: this.processingJobs.size,
+            now,
+          });
           await this.delay(1000);
           continue;
         }
@@ -314,6 +323,11 @@ class DatabaseQueue {
       .single();
 
     if (error || !claimedJob) {
+      logger.debug("Failed to claim job for processing", {
+        jobId: job.id,
+        status: job.status,
+        error,
+      });
       return false;
     }
 

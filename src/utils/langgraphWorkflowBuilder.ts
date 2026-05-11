@@ -295,7 +295,8 @@ export class AdvancedWorkflowBuilder {
         timestamp: endTime,
       });
 
-      throw error;
+      // Return error state without throwing - allow graph to continue
+      return updatedState;
     }
   }
 

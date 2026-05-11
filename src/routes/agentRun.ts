@@ -160,6 +160,8 @@ export const agentRunHandler = async (req: Request, res: Response) => {
       agentVersion = "temp";
     }
 
+    let executionId = providedExecutionId;
+
     // Generate idempotency key
     const idempotencyKey = createHash("sha256")
       .update(`${userId}${agentId}${JSON.stringify(input)}${agentVersion}`)
@@ -168,7 +170,7 @@ export const agentRunHandler = async (req: Request, res: Response) => {
     // Check for existing execution
     const { data: existingExecution, error: checkError } = await supabase
       .from("agent_executions")
-      .select("id")
+      .select("id, status")
       .eq("idempotency_key", idempotencyKey)
       .single();
 
@@ -181,7 +183,38 @@ export const agentRunHandler = async (req: Request, res: Response) => {
     }
 
     if (existingExecution) {
-      return res.json({ executionId: existingExecution.id, reused: true });
+      if (
+        existingExecution.status === "queued" ||
+        existingExecution.status === "running" ||
+        existingExecution.status === "completed"
+      ) {
+        return res.json({ executionId: existingExecution.id, reused: true });
+      }
+
+      // If the previous execution failed or was cancelled, retry it instead of
+      // returning an invalid stale result. This keeps the idempotency key stable
+      // while allowing recovery from transient failures.
+      const resetResult = await supabase
+        .from("agent_executions")
+        .update({
+          status: "queued",
+          started_at: null,
+          completed_at: null,
+          error_message: null,
+          result: null,
+          workflow_id: null,
+        })
+        .eq("id", existingExecution.id);
+
+      if (resetResult.error) {
+        console.error("Failed to reset previous execution:", resetResult.error);
+        return res.status(500).json({
+          error: "Failed to reset previous execution",
+          details: resetResult.error.message,
+        });
+      }
+
+      executionId = existingExecution.id;
     }
 
     // Check global queue limit
@@ -193,24 +226,26 @@ export const agentRunHandler = async (req: Request, res: Response) => {
       return res.status(429).json({ error: "System busy, try later" });
     }
 
-    // Check per-user limit (max 5 concurrent jobs)
-    const { count: userActiveJobs, error: countError } = await supabase
+    // Check per-user running execution limit (max 5 concurrent running jobs)
+    const { count: userRunningJobs, error: countError } = await supabase
       .from("agent_executions")
       .select("*", { count: "exact", head: true })
       .eq("user_id", userId)
-      .in("status", ["queued", "running"]);
+      .eq("status", "running");
 
     if (countError) {
       console.error("Error checking user jobs:", countError);
       return res.status(500).json({ error: "Internal server error" });
     }
 
-    if ((userActiveJobs || 0) >= 5) {
-      return res.status(429).json({ error: "System busy, try later" });
+    if ((userRunningJobs || 0) >= 5) {
+      return res.status(429).json({
+        error:
+          "Too many concurrent running executions. Wait for current jobs to finish.",
+      });
     }
 
     // For temporary executions, don't store agent_id to avoid foreign key conflicts
-    let executionId = providedExecutionId;
     if (executionId) {
       const { data: existingExecution, error: existingExecError } =
         await supabase
