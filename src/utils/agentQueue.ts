@@ -563,10 +563,12 @@ async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
     await updateExecutionStatus(executionId, "running", {
       started_at: new Date().toISOString(),
     });
-    emitExecutionUpdate(executionId, {
-      event: "execution-started",
-      status: "running",
-    });
+    // Emit execution-started event to frontend
+    emitSocketEvent(
+      "execution-started",
+      { executionId },
+      `execution:${executionId}`,
+    );
     await supabase
       .from("job_queue")
       .update({
@@ -592,10 +594,12 @@ async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
       {
         onNodeStart: (nodeId) => {
           logger.debug("Node started", { executionId, nodeId });
-          emitExecutionUpdate(executionId, {
-            event: "node-started",
-            nodeId,
-          });
+          // Emit node-started event to frontend
+          emitSocketEvent(
+            "node-started",
+            { executionId, nodeId },
+            `execution:${executionId}`,
+          );
         },
         onNodeComplete: (nodeId, success, error) => {
           logger.debug("Node completed", {
@@ -604,43 +608,47 @@ async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
             success,
             error,
           });
-          emitExecutionUpdate(executionId, {
-            event: "node-completed",
-            nodeId,
-            success,
-            error,
-          });
+          // Emit node-completed event to frontend
+          emitSocketEvent(
+            "node-completed",
+            { executionId, nodeId, success, error },
+            `execution:${executionId}`,
+          );
         },
         onExecutionComplete: (result: any) => {
           logger.info("Workflow execution completed event", {
             executionId,
             success: result?.success,
-            hasOutput: !!result?.output,
+            hasOutput: result?.hasOutput,
+            nodeStatusCount: result?.nodeStatusCount,
           });
           const success =
             typeof result === "boolean" ? result : result?.success || false;
-          const partialSuccess =
-            typeof result === "object"
-              ? result?.partialSuccess || false
-              : false;
-          emitExecutionUpdate(executionId, {
-            event: "execution-completed",
-            success,
-            partialSuccess,
-          });
+          // Emit execution-completed event to frontend
+          emitSocketEvent(
+            "execution-completed",
+            {
+              executionId,
+              success,
+              hasOutput: result?.hasOutput,
+              nodeStatusCount: result?.nodeStatusCount,
+            },
+            `execution:${executionId}`,
+          );
         },
         onCompensationStart: (nodeId) => {
-          emitExecutionUpdate(executionId, {
-            event: "compensation-started",
-            nodeId,
-          });
+          emitSocketEvent(
+            "compensation-started",
+            { executionId, nodeId },
+            `execution:${executionId}`,
+          );
         },
         onCompensationComplete: (nodeId, success) => {
-          emitExecutionUpdate(executionId, {
-            event: "compensation-completed",
-            nodeId,
-            success,
-          });
+          emitSocketEvent(
+            "compensation-completed",
+            { executionId, nodeId, success },
+            `execution:${executionId}`,
+          );
         },
       },
     );
@@ -650,7 +658,9 @@ async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
       success: result?.success,
       hasErrors: (result?.errors?.length || 0) > 0,
       errorCount: result?.errors?.length || 0,
-      nodeStatusCount: result?.nodeStatuses?.length || 0,
+      hasOutput: result?.hasOutput,
+      nodeStatusCount:
+        (result?.nodeStatusCount ?? result?.nodeStatuses?.length) || 0,
     });
 
     const executionTime = Date.now() - jobStartTime;

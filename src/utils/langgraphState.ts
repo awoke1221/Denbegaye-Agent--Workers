@@ -55,6 +55,13 @@ export const AgentState = Annotation.Root({
     reducer: (x, y) => ({ ...x, ...y }),
   }),
 
+  // Node status tracking
+  nodeStatuses: Annotation<
+    Record<string, "pending" | "running" | "completed" | "failed">
+  >({
+    reducer: (x, y) => ({ ...x, ...y }),
+  }),
+
   // Execution tracking
   nodeExecutionOrder: Annotation<string[]>({
     reducer: (x, y) => [...x, ...y],

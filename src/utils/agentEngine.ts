@@ -678,7 +678,20 @@ export class AdvancedWorkflowExecutor {
     // Persist execution state for monitoring and debugging
     await this.persistExecutionState(overallSuccess, partialSuccess);
 
-    options?.onExecutionComplete?.({ success: overallSuccess, partialSuccess });
+    const nodeStatusCount = Array.from(this.nodeStates.values()).reduce(
+      (acc, state) => {
+        acc[state.status] = (acc[state.status] || 0) + 1;
+        return acc;
+      },
+      {} as Record<string, number>,
+    );
+
+    options?.onExecutionComplete?.({
+      success: overallSuccess,
+      partialSuccess,
+      hasOutput: Object.keys(variables).length > 0,
+      nodeStatusCount,
+    });
 
     return {
       success: overallSuccess,
@@ -864,6 +877,12 @@ export async function executeWorkflow(
     logs: string[];
   }>;
   executionTime: number;
+  hasOutput?: boolean;
+  nodeStatusCount?: Record<string, number>;
+  nodeStatusMap?: Record<
+    string,
+    "pending" | "running" | "completed" | "failed"
+  >;
 }> {
   const startTime = Date.now();
 
@@ -923,10 +942,10 @@ export async function executeWorkflow(
         ) {
           logger.debug("Stream event: execution_complete", {
             success: event.data?.success,
+            hasOutput: event.data?.hasOutput,
+            nodeStatusCount: event.data?.nodeStatusCount,
           });
-          const success =
-            event.data?.status === "completed" || event.data?.success === true;
-          options.onExecutionComplete({ success });
+          options.onExecutionComplete(event.data);
         }
       });
     }
@@ -1017,6 +1036,15 @@ export async function executeWorkflow(
         nodeStatuses,
         nodeResults,
         executionTime,
+        hasOutput: Object.keys(result.output || {}).length > 0,
+        nodeStatusCount: Object.keys(result.state.nodeStatuses || {}).reduce(
+          (acc, status) => {
+            acc[status] = (acc[status] || 0) + 1;
+            return acc;
+          },
+          {} as Record<string, number>,
+        ),
+        nodeStatusMap: result.state.nodeStatuses,
       };
     }
 

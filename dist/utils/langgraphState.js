@@ -35,6 +35,10 @@ exports.AgentState = langgraph_1.Annotation.Root({
     nodeResults: (0, langgraph_1.Annotation)({
         reducer: (x, y) => ({ ...x, ...y }),
     }),
+    // Node status tracking
+    nodeStatuses: (0, langgraph_1.Annotation)({
+        reducer: (x, y) => ({ ...x, ...y }),
+    }),
     // Execution tracking
     nodeExecutionOrder: (0, langgraph_1.Annotation)({
         reducer: (x, y) => [...x, ...y],

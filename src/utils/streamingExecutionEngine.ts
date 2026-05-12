@@ -46,23 +46,26 @@ export class StreamingExecutionEngine {
       // Create workflow builder
       const builder = createWorkflowBuilder(config);
 
-      // Register stream callback
-      builder.onStream((event) => {
-        onStream?.(event);
-        config.broadcastFn?.(event);
+      // Register stream callback ONLY if not using streamExecute
+      // (streamExecute handles its own event collection to avoid duplicates)
+      if (!config.enableStreaming) {
+        builder.onStream((event) => {
+          onStream?.(event);
+          config.broadcastFn?.(event);
 
-        // Emit to all listeners
-        const listeners = this.streamListeners.get(executionId) || new Set();
-        for (const listener of listeners) {
-          try {
-            listener(event);
-          } catch (error) {
-            logger.error("Stream listener error", {
-              error: (error as Error).message,
-            });
+          // Emit to all listeners
+          const listeners = this.streamListeners.get(executionId) || new Set();
+          for (const listener of listeners) {
+            try {
+              listener(event);
+            } catch (error) {
+              logger.error("Stream listener error", {
+                error: (error as Error).message,
+              });
+            }
           }
-        }
-      });
+        });
+      }
 
       // Execute with streaming
       const startTime = Date.now();
@@ -73,7 +76,13 @@ export class StreamingExecutionEngine {
       });
 
       const result = (await (config.enableStreaming
-        ? this.streamExecuteWorkflow(builder, input, executionId)
+        ? this.streamExecuteWorkflow(
+            builder,
+            input,
+            executionId,
+            onStream,
+            config.broadcastFn,
+          )
         : builder.execute(input))) as any;
 
       const executionTime = Date.now() - startTime;
@@ -108,6 +117,8 @@ export class StreamingExecutionEngine {
     builder: any,
     input: Record<string, any>,
     executionId: string,
+    onStream?: (event: StreamEvent) => void,
+    broadcastFn?: (event: StreamEvent) => void,
   ): Promise<{
     success: boolean;
     output: Record<string, any>;
@@ -121,15 +132,13 @@ export class StreamingExecutionEngine {
     let output: Record<string, any> = input;
 
     try {
-      // Use streamExecute generator
+      // Use streamExecute generator to collect events without duplicate listeners
       for await (const event of builder.streamExecute(input)) {
-        if (event.type === "node_end") {
-          output = { ...output, ...event.data };
-        } else if (event.type === "node_error") {
-          errors.push(event.data.error);
-        }
+        // Broadcast the event to all registered listeners
+        onStream?.(event);
+        broadcastFn?.(event);
 
-        // Emit to listeners
+        // Emit to all subscribed listeners for this execution
         const listeners = this.streamListeners.get(executionId) || new Set();
         for (const listener of listeners) {
           try {
@@ -139,6 +148,13 @@ export class StreamingExecutionEngine {
               error: (error as Error).message,
             });
           }
+        }
+
+        // Collect output from node_end events
+        if (event.type === "node_end") {
+          output = { ...output, ...event.data };
+        } else if (event.type === "node_error") {
+          errors.push(event.data.error);
         }
       }
 

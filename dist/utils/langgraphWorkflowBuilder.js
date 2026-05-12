@@ -86,6 +86,10 @@ class AdvancedWorkflowBuilder {
     addNodeProcessor(nodeConfig) {
         const nodeId = nodeConfig.id;
         this.graph.addNode(nodeId, async (state) => {
+            logger_1.logger.info("Node processor invoked by LangGraph", {
+                executionId: this.config.executionId,
+                nodeId,
+            });
             return await this.executeNode(state, nodeConfig);
         });
         logger_1.logger.debug(`Added node to graph: ${nodeId}`);
@@ -96,6 +100,11 @@ class AdvancedWorkflowBuilder {
     async executeNode(state, nodeConfig) {
         const nodeId = nodeConfig.id;
         const startTime = new Date();
+        logger_1.logger.info("Executing node", {
+            executionId: this.config.executionId,
+            nodeId,
+            nodeType: nodeConfig.type,
+        });
         let updatedState = langgraphState_1.StateUtils.addStreamEvent(state, {
             type: "node_start",
             nodeId,
@@ -109,15 +118,12 @@ class AdvancedWorkflowBuilder {
                 ...updatedState.nodeStartTimes,
                 [nodeId]: startTime,
             },
+            nodeStatuses: {
+                ...updatedState.nodeStatuses,
+                [nodeId]: "running",
+            },
         };
         try {
-            // Emit node start stream event immediately before execution begins
-            this.emitStreamEvent({
-                type: "node_start",
-                nodeId,
-                data: { config: nodeConfig.config },
-                timestamp: startTime,
-            });
             // Prepare node input
             const nodeInput = this.prepareNodeInput(state, nodeConfig);
             // Execute the node tool
@@ -139,13 +145,14 @@ class AdvancedWorkflowBuilder {
                 executionId: this.config.executionId,
             });
             updatedState = langgraphState_1.StateUtils.addLog(updatedState, "info", `Node ${nodeId} executed successfully`, { executionTime: result.executionTime }, nodeId);
-            // Emit stream event
-            this.emitStreamEvent({
-                type: "node_end",
-                nodeId,
-                data: result.data,
-                timestamp: endTime,
-            });
+            // Mark node as completed
+            updatedState = {
+                ...updatedState,
+                nodeStatuses: {
+                    ...updatedState.nodeStatuses,
+                    [nodeId]: "completed",
+                },
+            };
             return updatedState;
         }
         catch (error) {
@@ -175,14 +182,16 @@ class AdvancedWorkflowBuilder {
                 data: { error: errorMessage },
                 executionId: this.config.executionId,
             });
-            // Emit error event
-            this.emitStreamEvent({
-                type: "node_error",
-                nodeId,
-                data: { error: errorMessage },
-                timestamp: endTime,
-            });
-            throw error;
+            // Mark node as failed
+            updatedState = {
+                ...updatedState,
+                nodeStatuses: {
+                    ...updatedState.nodeStatuses,
+                    [nodeId]: "failed",
+                },
+            };
+            // Return error state without throwing - allow graph to continue
+            return updatedState;
         }
     }
     /**
@@ -272,6 +281,7 @@ class AdvancedWorkflowBuilder {
                 shortTermMemory: {},
                 longTermMemory: [],
                 nodeResults: {},
+                nodeStatuses: {},
                 nodeExecutionOrder: [],
                 nodeDependencies: {},
                 streamEvents: [],
@@ -291,21 +301,20 @@ class AdvancedWorkflowBuilder {
                 output: input,
             };
             const compiler = await this.compile();
-            // Stream events if enabled
-            if (this.config.enableStreaming) {
-                this.emitStreamEvent({
-                    type: "execution_complete",
-                    timestamp: new Date(),
-                    data: {
-                        status: "started",
-                        workflowId: this.config.workflowId,
-                    },
-                });
-            }
+            logger_1.logger.info("LangGraph workflow compiled successfully", {
+                executionId: this.config.executionId,
+                nodeCount: this.config.nodes.length,
+            });
             // Execute graph with enhanced error handling
             let finalState;
+            logger_1.logger.info("Invoking LangGraph compiler", {
+                executionId: this.config.executionId,
+            });
             try {
-                finalState = await compiler.invoke(initialState);
+                const invokePromise = compiler.invoke(initialState);
+                // Add 30-second timeout for workflow execution
+                const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Workflow execution timeout after 30s")), 30000));
+                finalState = await Promise.race([invokePromise, timeoutPromise]);
             }
             catch (executionError) {
                 // Log the execution error but don't fail completely
@@ -337,16 +346,48 @@ class AdvancedWorkflowBuilder {
             }
             const endTime = new Date();
             finalState.endTime = endTime;
-            // Determine success based on error analysis
+            // Update final status based on execution results
             const hasErrors = finalState.errors && finalState.errors.length > 0;
+            const completedNodes = Object.values(finalState.nodeStatuses).filter((status) => status === "completed").length;
+            // Set final status
+            if (hasErrors && completedNodes === 0) {
+                finalState.status = "failed";
+            }
+            else {
+                finalState.status = "completed";
+            }
+            const finalOutput = {
+                ...finalState.output,
+                ...finalState.nodeResults,
+            };
             const hasSuccessfulNodes = finalState.nodeResults &&
                 Object.keys(finalState.nodeResults).length > 0;
+            const hasOutput = Object.values(finalState.nodeResults || {}).some((result) => result !== null && result !== undefined && result !== "");
+            const nodeStatusCount = completedNodes;
+            logger_1.logger.info("LangGraph compiler invocation completed", {
+                executionId: this.config.executionId,
+                status: finalState.status,
+                errorCount: finalState.errors?.length || 0,
+                nodeStatusCount,
+                hasOutput,
+            });
+            logger_1.logger.debug("LangGraph final state", {
+                executionId: this.config.executionId,
+                nodeStatuses: finalState.nodeStatuses,
+                nodeResults: finalState.nodeResults,
+                outputKeys: Object.keys(finalOutput),
+                status: finalState.status,
+                streamEvents: finalState.streamEvents.length,
+            });
             const result = {
-                success: !hasErrors, // Allow partial success
-                output: finalState.output,
+                success: !hasErrors || completedNodes > 0, // Allow partial success
+                output: finalOutput,
                 state: finalState,
                 logs: finalState.logs.map((l) => l.message),
                 errors: finalState.errors.map((e) => e.error),
+                hasOutput,
+                nodeStatusCount,
+                nodeStatuses: finalState.nodeStatuses,
             };
             if (this.config.enableStreaming) {
                 this.emitStreamEvent({
@@ -354,6 +395,9 @@ class AdvancedWorkflowBuilder {
                     timestamp: new Date(),
                     data: {
                         ...result,
+                        hasOutput,
+                        nodeStatusCount,
+                        success: result.success,
                         executionTime: finalState.endTime
                             ? finalState.endTime.getTime() - finalState.startTime.getTime()
                             : 0,
@@ -369,13 +413,19 @@ class AdvancedWorkflowBuilder {
             this.emitStreamEvent({
                 type: "execution_complete",
                 timestamp: new Date(),
-                data: { success: false, error: errorMessage },
+                data: {
+                    success: false,
+                    error: errorMessage,
+                    hasOutput: false,
+                },
             });
             throw error;
         }
     }
     /**
      * Stream execution with real-time updates
+     * This method collects all stream events and yields them directly
+     * to avoid duplicate listener registration
      */
     async *streamExecute(input) {
         try {
@@ -390,6 +440,7 @@ class AdvancedWorkflowBuilder {
                 shortTermMemory: {},
                 longTermMemory: [],
                 nodeResults: {},
+                nodeStatuses: {},
                 nodeExecutionOrder: [],
                 nodeDependencies: {},
                 streamEvents: [],
@@ -410,28 +461,22 @@ class AdvancedWorkflowBuilder {
             };
             const compiler = await this.compile();
             const pendingEvents = [];
-            // Collect events
-            const eventPromise = new Promise((resolve) => {
-                this.onStream((event) => {
-                    pendingEvents.push(event);
-                    resolve();
-                });
+            const originalCallbacks = [...this.streamCallbacks];
+            // Clear callbacks to prevent duplicate emissions
+            this.streamCallbacks = [];
+            // Register a single local callback to collect events
+            this.streamCallbacks.push((event) => {
+                pendingEvents.push(event);
             });
-            // Execute
-            const executePromise = compiler.invoke(initialState);
-            // Yield events as they come in
-            while (true) {
-                try {
-                    await Promise.race([eventPromise, executePromise]);
-                }
-                catch {
-                    break;
-                }
-                while (pendingEvents.length > 0) {
-                    yield pendingEvents.shift();
-                }
+            try {
+                // Execute the workflow
+                await compiler.invoke(initialState);
             }
-            // Yield final events
+            finally {
+                // Restore original callbacks (though they may not be used after generator completes)
+                this.streamCallbacks = originalCallbacks;
+            }
+            // Yield all collected events
             for (const event of pendingEvents) {
                 yield event;
             }

@@ -444,7 +444,16 @@ class AdvancedWorkflowExecutor {
         }
         // Persist execution state for monitoring and debugging
         await this.persistExecutionState(overallSuccess, partialSuccess);
-        options?.onExecutionComplete?.({ success: overallSuccess, partialSuccess });
+        const nodeStatusCount = Array.from(this.nodeStates.values()).reduce((acc, state) => {
+            acc[state.status] = (acc[state.status] || 0) + 1;
+            return acc;
+        }, {});
+        options?.onExecutionComplete?.({
+            success: overallSuccess,
+            partialSuccess,
+            hasOutput: Object.keys(variables).length > 0,
+            nodeStatusCount,
+        });
         return {
             success: overallSuccess,
             partialSuccess,
@@ -610,28 +619,40 @@ async function executeWorkflow(nodes, edges, input, apiKeys, executionId, userId
                 if (event.type === "node_start" &&
                     event.nodeId &&
                     options.onNodeStart) {
+                    logger_1.logger.debug("Stream event: node_start", { nodeId: event.nodeId });
                     options.onNodeStart(event.nodeId);
                 }
                 else if (event.type === "node_end" &&
                     event.nodeId &&
                     options.onNodeComplete) {
+                    logger_1.logger.debug("Stream event: node_end", { nodeId: event.nodeId });
                     options.onNodeComplete(event.nodeId, true);
                 }
                 else if (event.type === "node_error" &&
                     event.nodeId &&
                     options.onNodeComplete) {
+                    logger_1.logger.debug("Stream event: node_error", { nodeId: event.nodeId });
                     options.onNodeComplete(event.nodeId, false, event.data?.error);
                 }
                 else if (event.type === "execution_complete" &&
                     options.onExecutionComplete) {
-                    const success = event.data?.status === "completed" || event.data?.success === true;
-                    options.onExecutionComplete({ success });
+                    logger_1.logger.debug("Stream event: execution_complete", {
+                        success: event.data?.success,
+                        hasOutput: event.data?.hasOutput,
+                        nodeStatusCount: event.data?.nodeStatusCount,
+                    });
+                    options.onExecutionComplete(event.data);
                 }
             });
         }
         let result;
+        logger_1.logger.info("Executing LangGraph workflow", { executionId });
         try {
             result = await builder.execute(input);
+            logger_1.logger.info("LangGraph execution succeeded", {
+                executionId,
+                success: result.success,
+            });
         }
         catch (builderError) {
             logger_1.logger.warn("LangGraph execution failed, falling back to advanced executor", {
@@ -688,6 +709,12 @@ async function executeWorkflow(nodes, edges, input, apiKeys, executionId, userId
                 nodeStatuses,
                 nodeResults,
                 executionTime,
+                hasOutput: Object.keys(result.output || {}).length > 0,
+                nodeStatusCount: Object.keys(result.state.nodeStatuses || {}).reduce((acc, status) => {
+                    acc[status] = (acc[status] || 0) + 1;
+                    return acc;
+                }, {}),
+                nodeStatusMap: result.state.nodeStatuses,
             };
         }
         // Advanced executor result

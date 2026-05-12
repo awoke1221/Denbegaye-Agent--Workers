@@ -115,6 +115,10 @@ class WorkflowMonitoringSystem {
      */
     async getHealthMetrics(timeRangeHours = 24) {
         const timeRange = new Date(Date.now() - timeRangeHours * 60 * 60 * 1000);
+        logger_1.logger.debug("Starting health metrics calculation", {
+            timeRangeHours,
+            timeRange: timeRange.toISOString(),
+        });
         try {
             // Get execution statistics. Some schema versions may not yet include optional columns.
             const executionSelect = "status, execution_time_ms, created_at, partial_success, circuit_breaker_tripped, failed_nodes";

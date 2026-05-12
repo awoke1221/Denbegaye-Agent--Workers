@@ -161,6 +161,24 @@ function createLangGraphRoutes(io) {
 function setupLangGraphWebSocket(io) {
     io.on("connection", (socket) => {
         logger_1.logger.debug("WebSocket client connected", { socketId: socket.id });
+        const activeSocketSubscriptions = new Map();
+        const cleanupSubscription = (executionId) => {
+            const unsubscribe = activeSocketSubscriptions.get(executionId);
+            if (unsubscribe) {
+                unsubscribe();
+                activeSocketSubscriptions.delete(executionId);
+                socket.leave(`execution:${executionId}`);
+                logger_1.logger.debug("Client unsubscribed from execution", {
+                    socketId: socket.id,
+                    executionId,
+                });
+            }
+        };
+        const cleanupAllSubscriptions = () => {
+            for (const executionId of activeSocketSubscriptions.keys()) {
+                cleanupSubscription(executionId);
+            }
+        };
         /**
          * Subscribe to execution stream
          */
@@ -169,15 +187,16 @@ function setupLangGraphWebSocket(io) {
                 socketId: socket.id,
                 executionId,
             });
+            cleanupSubscription(executionId);
             socket.join(`execution:${executionId}`);
             const streamContext = (0, streamingExecutionEngine_1.createStreamingContext)(executionId);
             const unsubscribe = streamContext.subscribe((event) => {
                 socket.emit("execution:update", event);
             });
-            socket.on("disconnect", () => {
-                unsubscribe();
-                logger_1.logger.debug("Client unsubscribed", { socketId: socket.id });
-            });
+            activeSocketSubscriptions.set(executionId, unsubscribe);
+        });
+        socket.on("unsubscribe:execution", (executionId) => {
+            cleanupSubscription(executionId);
         });
         /**
          * Cancel execution
@@ -201,6 +220,7 @@ function setupLangGraphWebSocket(io) {
             });
         });
         socket.on("disconnect", () => {
+            cleanupAllSubscriptions();
             logger_1.logger.debug("WebSocket client disconnected", { socketId: socket.id });
         });
     });

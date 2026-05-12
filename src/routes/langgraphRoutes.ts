@@ -214,6 +214,27 @@ export function setupLangGraphWebSocket(io: SocketIOServer): void {
   io.on("connection", (socket) => {
     logger.debug("WebSocket client connected", { socketId: socket.id });
 
+    const activeSocketSubscriptions = new Map<string, () => void>();
+
+    const cleanupSubscription = (executionId: string) => {
+      const unsubscribe = activeSocketSubscriptions.get(executionId);
+      if (unsubscribe) {
+        unsubscribe();
+        activeSocketSubscriptions.delete(executionId);
+        socket.leave(`execution:${executionId}`);
+        logger.debug("Client unsubscribed from execution", {
+          socketId: socket.id,
+          executionId,
+        });
+      }
+    };
+
+    const cleanupAllSubscriptions = () => {
+      for (const executionId of activeSocketSubscriptions.keys()) {
+        cleanupSubscription(executionId);
+      }
+    };
+
     /**
      * Subscribe to execution stream
      */
@@ -223,6 +244,7 @@ export function setupLangGraphWebSocket(io: SocketIOServer): void {
         executionId,
       });
 
+      cleanupSubscription(executionId);
       socket.join(`execution:${executionId}`);
 
       const streamContext = createStreamingContext(executionId);
@@ -230,10 +252,11 @@ export function setupLangGraphWebSocket(io: SocketIOServer): void {
         socket.emit("execution:update", event);
       });
 
-      socket.on("disconnect", () => {
-        unsubscribe();
-        logger.debug("Client unsubscribed", { socketId: socket.id });
-      });
+      activeSocketSubscriptions.set(executionId, unsubscribe);
+    });
+
+    socket.on("unsubscribe:execution", (executionId: string) => {
+      cleanupSubscription(executionId);
     });
 
     /**
@@ -262,6 +285,7 @@ export function setupLangGraphWebSocket(io: SocketIOServer): void {
     });
 
     socket.on("disconnect", () => {
+      cleanupAllSubscriptions();
       logger.debug("WebSocket client disconnected", { socketId: socket.id });
     });
   });

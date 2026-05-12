@@ -27,23 +27,26 @@ class StreamingExecutionEngine {
         try {
             // Create workflow builder
             const builder = (0, langgraphWorkflowBuilder_1.createWorkflowBuilder)(config);
-            // Register stream callback
-            builder.onStream((event) => {
-                onStream?.(event);
-                config.broadcastFn?.(event);
-                // Emit to all listeners
-                const listeners = this.streamListeners.get(executionId) || new Set();
-                for (const listener of listeners) {
-                    try {
-                        listener(event);
+            // Register stream callback ONLY if not using streamExecute
+            // (streamExecute handles its own event collection to avoid duplicates)
+            if (!config.enableStreaming) {
+                builder.onStream((event) => {
+                    onStream?.(event);
+                    config.broadcastFn?.(event);
+                    // Emit to all listeners
+                    const listeners = this.streamListeners.get(executionId) || new Set();
+                    for (const listener of listeners) {
+                        try {
+                            listener(event);
+                        }
+                        catch (error) {
+                            logger_1.logger.error("Stream listener error", {
+                                error: error.message,
+                            });
+                        }
                     }
-                    catch (error) {
-                        logger_1.logger.error("Stream listener error", {
-                            error: error.message,
-                        });
-                    }
-                }
-            });
+                });
+            }
             // Execute with streaming
             const startTime = Date.now();
             logger_1.logger.debug("Starting streaming execution", {
@@ -51,7 +54,7 @@ class StreamingExecutionEngine {
                 workflowId: config.workflowId,
             });
             const result = (await (config.enableStreaming
-                ? this.streamExecuteWorkflow(builder, input, executionId)
+                ? this.streamExecuteWorkflow(builder, input, executionId, onStream, config.broadcastFn)
                 : builder.execute(input)));
             const executionTime = Date.now() - startTime;
             // Cleanup
@@ -77,21 +80,18 @@ class StreamingExecutionEngine {
     /**
      * Stream execute workflow
      */
-    async streamExecuteWorkflow(builder, input, executionId) {
+    async streamExecuteWorkflow(builder, input, executionId, onStream, broadcastFn) {
         const logs = [];
         const errors = [];
         const startTime = Date.now();
         let output = input;
         try {
-            // Use streamExecute generator
+            // Use streamExecute generator to collect events without duplicate listeners
             for await (const event of builder.streamExecute(input)) {
-                if (event.type === "node_end") {
-                    output = { ...output, ...event.data };
-                }
-                else if (event.type === "node_error") {
-                    errors.push(event.data.error);
-                }
-                // Emit to listeners
+                // Broadcast the event to all registered listeners
+                onStream?.(event);
+                broadcastFn?.(event);
+                // Emit to all subscribed listeners for this execution
                 const listeners = this.streamListeners.get(executionId) || new Set();
                 for (const listener of listeners) {
                     try {
@@ -102,6 +102,13 @@ class StreamingExecutionEngine {
                             error: error.message,
                         });
                     }
+                }
+                // Collect output from node_end events
+                if (event.type === "node_end") {
+                    output = { ...output, ...event.data };
+                }
+                else if (event.type === "node_error") {
+                    errors.push(event.data.error);
                 }
             }
             return {
