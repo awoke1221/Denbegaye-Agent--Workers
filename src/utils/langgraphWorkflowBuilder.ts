@@ -283,6 +283,7 @@ export class AdvancedWorkflowBuilder {
         `[data-passing] Node ${nodeId} output:`,
         JSON.stringify(result?.data?.output || result?.data).slice(0, 200),
       );
+
       // Update state with result
       updatedState = StateUtils.updateNodeResult(
         updatedState,
@@ -297,6 +298,47 @@ export class AdvancedWorkflowBuilder {
           [nodeId]: endTime,
         },
       };
+
+      if (result.success === false) {
+        const errorMessage =
+          result.error ||
+          result.data?.error ||
+          result.data?.message ||
+          "Node execution failed";
+
+        updatedState = StateUtils.addStreamEvent(updatedState, {
+          type: "node_error",
+          nodeId,
+          data: { error: errorMessage },
+          executionId: this.config.executionId,
+        });
+
+        updatedState = StateUtils.addError(
+          updatedState,
+          errorMessage,
+          nodeId,
+          undefined,
+        );
+
+        updatedState = StateUtils.addLog(
+          updatedState,
+          "warn",
+          `Node ${nodeId} failed: ${errorMessage}`,
+          { executionTime: result.executionTime },
+          nodeId,
+        );
+
+        updatedState = {
+          ...updatedState,
+          nodeStatuses: {
+            ...updatedState.nodeStatuses,
+            [nodeId]: "failed",
+          },
+          status: "failed",
+        };
+
+        return updatedState;
+      }
 
       updatedState = StateUtils.addStreamEvent(updatedState, {
         type: "node_end",
@@ -586,7 +628,7 @@ export class AdvancedWorkflowBuilder {
       ).length;
 
       // Set final status
-      if (hasErrors && completedNodes === 0) {
+      if (hasErrors) {
         finalState.status = "failed";
       } else {
         finalState.status = "completed";
@@ -625,7 +667,7 @@ export class AdvancedWorkflowBuilder {
       });
 
       const result = {
-        success: !hasErrors || completedNodes > 0, // Allow partial success
+        success: !hasErrors,
         output: finalOutput,
         state: finalState,
         logs: finalState.logs.map((l: any) => l.message),
@@ -633,6 +675,7 @@ export class AdvancedWorkflowBuilder {
         hasOutput,
         nodeStatusCount,
         nodeStatuses: finalState.nodeStatuses,
+        partialSuccess: hasErrors && hasSuccessfulNodes,
       };
 
       if (this.config.enableStreaming) {

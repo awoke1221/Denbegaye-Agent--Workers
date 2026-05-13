@@ -428,7 +428,7 @@ export const agentRunHandler = async (req: Request, res: Response) => {
     console.error("Agent execution error:", error);
     return res.status(500).json({
       error: "Internal server error",
-      details: error instanceof Error ? error.message : "Unknown error",
+      details: error instanceof Error ? error.message : String(error),
     });
   }
 };

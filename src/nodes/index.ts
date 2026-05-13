@@ -450,7 +450,9 @@ const geminiHandler = async (context: any) => {
 
 const deepseekHandler = async (context: any) => {
   const apiKey = context.config?.apiKey || context.apiKeys?.deepseek;
-  const model = context.config?.model || "deepseek-chat";
+  const model = context.config?.model || "deepseek-v4-flash";
+  const compatibility = context.config?.compatibility || "openai";
+  const customBaseUrl = context.config?.baseUrl;
   const nodeType = context.nodeType || context.type || "ai-deepseek";
   const prompt =
     context.config?.inputText ||
@@ -468,17 +470,69 @@ const deepseekHandler = async (context: any) => {
     };
   }
 
+  const baseUrl = customBaseUrl
+    ? customBaseUrl.replace(/\/+$/g, "")
+    : compatibility === "anthropic"
+      ? "https://api.deepseek.com/anthropic"
+      : "https://api.deepseek.com";
+
   try {
-    const llm = llmFactory.createLLM({
-      provider: "deepseek",
-      apiKey,
+    const isAnthropic = compatibility === "anthropic";
+    const endpoint = isAnthropic
+      ? `${baseUrl}/v1/messages`
+      : `${baseUrl}/v1/chat/completions`;
+
+    const body: Record<string, any> = {
       model,
       temperature: context.config?.temperature ?? 0.7,
-      maxTokens: context.config?.maxTokens,
+      max_tokens: context.config?.maxTokens ?? 1000,
+    };
+
+    if (isAnthropic) {
+      body.messages = [
+        {
+          role: "user",
+          content: prompt,
+        },
+      ];
+    } else {
+      body.messages = [
+        {
+          role: "user",
+          content: prompt,
+        },
+      ];
+    }
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    if (isAnthropic) {
+      headers["x-api-key"] = apiKey;
+    } else {
+      headers["Authorization"] = `Bearer ${apiKey}`;
+    }
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
     });
 
-    const response = await llm.invoke([new HumanMessage(prompt)]);
-    const generatedText = response.content as string;
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => null);
+      const message =
+        errorData?.error?.message || errorData?.message || response.statusText;
+      throw new Error(`DeepSeek API error: ${message}`);
+    }
+
+    const result = await response.json();
+    const generatedText = isAnthropic
+      ? result?.choices?.[0]?.message?.content || result?.completion || ""
+      : result?.choices?.[0]?.message?.content ||
+        result?.choices?.[0]?.text ||
+        "";
 
     return {
       success: true,
@@ -488,6 +542,8 @@ const deepseekHandler = async (context: any) => {
         model,
         data: {
           model,
+          compatibility,
+          baseUrl,
           systemPrompt: context.config?.systemPrompt || "",
           executionType: "ai-completion",
           provider: "deepseek",
@@ -495,13 +551,13 @@ const deepseekHandler = async (context: any) => {
         raw: {
           model,
           prompt,
-          response: generatedText,
+          response: result,
           nodeId: context.nodeId,
           nodeType,
         },
       },
       logs: [
-        `${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`,
+        `${nodeType} node executed with model ${model} on ${endpoint}, generated ${generatedText.length} characters`,
       ],
     };
   } catch (error) {

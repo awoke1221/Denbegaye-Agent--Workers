@@ -252,7 +252,8 @@ export class WorkflowMonitoringSystem {
       const recentErrorsFormatted =
         recentErrors?.map((err) => ({
           executionId: err.id,
-          error: err.error_message || "Unknown error",
+          error:
+            err.error_message || String(err.error_message ?? "Unknown error"),
           timestamp: new Date(err.created_at),
         })) || [];
 

@@ -17,6 +17,7 @@ interface WorkflowExecutionContext {
   maxRetries: number;
   enablePartialSuccess: boolean;
   enableCompensation: boolean;
+  stopOnFailure: boolean;
   circuitBreakerThreshold: number;
   executionTimeout: number;
 }
@@ -356,12 +357,18 @@ export class AdvancedWorkflowExecutor {
       } else {
         nodeState.error = result.error;
         nodeState.status = "failed";
-        errors.push(result.error || "Unknown error");
+        const nodeError =
+          result.error ||
+          result.output?.error ||
+          result.output?.message ||
+          "Node execution failed";
+
+        errors.push(nodeError);
         logs.push(...result.logs);
         hasFailures = true;
 
         // Check if we should abort execution based on failure policy
-        if (this.shouldAbortExecution(node, result.error || "Unknown error")) {
+        if (this.shouldAbortExecution(node, nodeError)) {
           this.executionAborted = true;
           break;
         }
@@ -760,6 +767,11 @@ export class AdvancedWorkflowExecutor {
    * Determine if execution should abort based on failure
    */
   private shouldAbortExecution(node: any, error: string): boolean {
+    // Abort on strict failure policy
+    if (this.context.stopOnFailure) {
+      return true;
+    }
+
     // Abort on critical infrastructure failures
     if (error.includes("authentication") || error.includes("authorization")) {
       return true;
@@ -979,6 +991,7 @@ export async function executeWorkflow(
         maxRetries: 2,
         enablePartialSuccess: true,
         enableCompensation: true,
+        stopOnFailure: true,
         circuitBreakerThreshold: 5,
         executionTimeout: 300000, // 5 minutes
       });

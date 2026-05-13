@@ -293,12 +293,13 @@ class DatabaseQueue {
             console.error(`Job ${job.id} failed:`, error);
             const attemptCount = job.attempt_count + 1;
             const maxAttempts = job.max_attempts || 3;
+            const errorMessage = error instanceof Error ? error.message : String(error);
             if (attemptCount >= maxAttempts) {
                 await supabaseClient_1.supabase
                     .from("job_queue")
                     .update({
                     status: "dead_letter",
-                    error_message: error instanceof Error ? error.message : "Unknown error",
+                    error_message: errorMessage,
                     failed_at: new Date().toISOString(),
                 })
                     .eq("id", job.id);
@@ -309,7 +310,7 @@ class DatabaseQueue {
                         job_id: job.id,
                         execution_id: job.payload.executionId,
                         agent_id: job.payload.agentId,
-                        error: error instanceof Error ? error.message : "Unknown error",
+                        error: errorMessage,
                         attempts: attemptCount,
                         timestamp: new Date().toISOString(),
                     },
@@ -322,7 +323,7 @@ class DatabaseQueue {
                     .update({
                     status: "queued",
                     scheduled_at: new Date(Date.now() + delay).toISOString(),
-                    error_message: error instanceof Error ? error.message : "Unknown error",
+                    error_message: errorMessage,
                     attempt_count: attemptCount,
                 })
                     .eq("id", job.id);

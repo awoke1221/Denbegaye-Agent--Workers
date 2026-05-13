@@ -96,7 +96,9 @@ const aiHandler = async (context) => {
                     nodeType,
                 },
             },
-            logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+            logs: [
+                `${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`,
+            ],
         };
     }
     catch (error) {
@@ -215,7 +217,9 @@ const openaiHandler = async (context) => {
                     nodeType,
                 },
             },
-            logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+            logs: [
+                `${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`,
+            ],
         };
     }
     catch (error) {
@@ -274,7 +278,9 @@ const anthropicHandler = async (context) => {
                     nodeType,
                 },
             },
-            logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+            logs: [
+                `${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`,
+            ],
         };
     }
     catch (error) {
@@ -333,7 +339,9 @@ const groqHandler = async (context) => {
                     nodeType,
                 },
             },
-            logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+            logs: [
+                `${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`,
+            ],
         };
     }
     catch (error) {
@@ -392,7 +400,9 @@ const geminiHandler = async (context) => {
                     nodeType,
                 },
             },
-            logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+            logs: [
+                `${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`,
+            ],
         };
     }
     catch (error) {
@@ -451,7 +461,9 @@ const deepseekHandler = async (context) => {
                     nodeType,
                 },
             },
-            logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+            logs: [
+                `${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`,
+            ],
         };
     }
     catch (error) {

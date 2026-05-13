@@ -198,7 +198,8 @@ export interface NodeExecutionContext {
 export interface NodeExecutionResult {
   nodeId: string;
   success: boolean;
-  data: Record<string, any>;
+  data?: Record<string, any>;
+  error?: string;
   messages?: BaseMessage[];
   errors?: Array<{
     error: string;

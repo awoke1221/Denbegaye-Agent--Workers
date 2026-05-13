@@ -27,7 +27,10 @@ const normalizeNodeType = (type: string) =>
 /**
  * Advanced tool wrapper for LangGraph nodes
  */
-export class LangGraphNodeTool extends StructuredTool<any, any, any, any> {
+export class LangGraphNodeTool extends StructuredTool<
+  Record<string, any>,
+  any
+> {
   name: string;
   description: string;
   schema: z.ZodSchema;
@@ -335,14 +338,36 @@ export class AdvancedToolExecutor {
         timestamp: new Date(),
       });
 
-      const result = await tool.invoke(input);
-
+      const rawResult = await tool.invoke(input);
+      const parsedResult = JSON.parse(rawResult as string);
       const executionTime = Date.now() - startTime;
+
+      if (parsedResult?.success === false) {
+        const errorMessage =
+          parsedResult.error || parsedResult.message || "Node execution failed";
+
+        this.streamCallback?.({
+          type: "node_error",
+          nodeId,
+          error: errorMessage,
+          result: parsedResult,
+          executionTime,
+          timestamp: new Date(),
+        });
+
+        return {
+          nodeId,
+          success: false,
+          data: parsedResult,
+          errors: [{ error: errorMessage, timestamp: new Date() }],
+          executionTime,
+        };
+      }
 
       this.streamCallback?.({
         type: "node_end",
         nodeId,
-        result: JSON.parse(result as string),
+        result: parsedResult,
         executionTime,
         timestamp: new Date(),
       });
@@ -350,7 +375,7 @@ export class AdvancedToolExecutor {
       return {
         nodeId,
         success: true,
-        data: JSON.parse(result as string),
+        data: parsedResult,
         executionTime,
       };
     } catch (error) {

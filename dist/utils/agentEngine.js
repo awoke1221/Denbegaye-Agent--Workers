@@ -222,11 +222,15 @@ class AdvancedWorkflowExecutor {
             else {
                 nodeState.error = result.error;
                 nodeState.status = "failed";
-                errors.push(result.error || "Unknown error");
+                const nodeError = result.error ||
+                    result.output?.error ||
+                    result.output?.message ||
+                    "Node execution failed";
+                errors.push(nodeError);
                 logs.push(...result.logs);
                 hasFailures = true;
                 // Check if we should abort execution based on failure policy
-                if (this.shouldAbortExecution(node, result.error || "Unknown error")) {
+                if (this.shouldAbortExecution(node, nodeError)) {
                     this.executionAborted = true;
                     break;
                 }

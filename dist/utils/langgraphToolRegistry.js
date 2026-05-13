@@ -244,19 +244,38 @@ class AdvancedToolExecutor {
                 nodeId,
                 timestamp: new Date(),
             });
-            const result = await tool.invoke(input);
+            const rawResult = await tool.invoke(input);
+            const parsedResult = JSON.parse(rawResult);
             const executionTime = Date.now() - startTime;
+            if (parsedResult?.success === false) {
+                const errorMessage = parsedResult.error || parsedResult.message || "Node execution failed";
+                this.streamCallback?.({
+                    type: "node_error",
+                    nodeId,
+                    error: errorMessage,
+                    result: parsedResult,
+                    executionTime,
+                    timestamp: new Date(),
+                });
+                return {
+                    nodeId,
+                    success: false,
+                    data: parsedResult,
+                    errors: [{ error: errorMessage, timestamp: new Date() }],
+                    executionTime,
+                };
+            }
             this.streamCallback?.({
                 type: "node_end",
                 nodeId,
-                result: JSON.parse(result),
+                result: parsedResult,
                 executionTime,
                 timestamp: new Date(),
             });
             return {
                 nodeId,
                 success: true,
-                data: JSON.parse(result),
+                data: parsedResult,
                 executionTime,
             };
         }

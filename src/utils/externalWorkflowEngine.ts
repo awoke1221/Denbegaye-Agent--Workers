@@ -51,8 +51,8 @@ export async function executeAgentWorkflow(
       success: false,
       output: {},
       executionTime: Date.now() - startTime,
-      logs: [`Agent execution failed: ${error}`],
-      errors: [error instanceof Error ? error.message : "Unknown error"],
+      logs: [`Agent execution failed: ${String(error)}`],
+      errors: [error instanceof Error ? error.message : String(error)],
     };
   }
 }

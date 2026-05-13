@@ -114,7 +114,7 @@ export class CloudExecutionEngine implements ExecutionEngine {
       return result;
     } catch (error) {
       const errorMessage =
-        error instanceof Error ? error.message : "Unknown error";
+        error instanceof Error ? error.message : String(error);
 
       logger.addError(errorMessage);
       logger.updateExecutionStatus({
@@ -1655,28 +1655,46 @@ export class CloudExecutionEngine implements ExecutionEngine {
     apiKey: string,
     options: Record<string, any>,
   ): Promise<any> {
-    const response = await fetch(
-      "https://api.deepseek.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: options.temperature || 0.7,
-          max_tokens: options.maxTokens || 1000,
-          ...options,
-        }),
-      },
-    );
+    const compatibility = options.compatibility || "openai";
+    const baseUrl = options.baseUrl
+      ? options.baseUrl.replace(/\/+$/g, "")
+      : compatibility === "anthropic"
+        ? "https://api.deepseek.com/anthropic"
+        : "https://api.deepseek.com";
+
+    const endpoint =
+      compatibility === "anthropic"
+        ? `${baseUrl}/v1/messages`
+        : `${baseUrl}/v1/chat/completions`;
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    if (compatibility === "anthropic") {
+      headers["x-api-key"] = apiKey;
+    } else {
+      headers["Authorization"] = `Bearer ${apiKey}`;
+    }
+
+    const body: Record<string, any> = {
+      model,
+      temperature: options.temperature || 0.7,
+      max_tokens: options.maxTokens || 1000,
+      messages,
+      ...options,
+    };
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
 
     if (!response.ok) {
-      const error = await response.json();
+      const error = await response.json().catch(() => null);
       throw new Error(
-        `DeepSeek API error: ${error.error?.message || response.statusText}`,
+        `DeepSeek API error: ${error?.error?.message || error?.message || response.statusText}`,
       );
     }
 
