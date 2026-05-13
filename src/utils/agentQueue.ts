@@ -274,11 +274,6 @@ class DatabaseQueue {
       try {
         const now = new Date().toISOString();
         const availableSlots = this.maxConcurrency - this.processingJobs.size;
-        logger.debug("Queue processor loop checking for jobs", {
-          availableSlots,
-          activeProcessingJobs: this.processingJobs.size,
-          now,
-        });
         if (availableSlots <= 0) {
           await this.delay(1000);
           continue;
@@ -300,10 +295,6 @@ class DatabaseQueue {
         }
 
         const { data: jobs, error } = await query.limit(availableSlots);
-        logger.debug("Fetched queued jobs from DB", {
-          jobCount: jobs?.length ?? 0,
-          availableSlots,
-        });
 
         if (error) {
           logger.error("Error fetching jobs:", error);
@@ -311,10 +302,6 @@ class DatabaseQueue {
           continue;
         }
         if (!jobs || jobs.length === 0) {
-          logger.debug("No ready jobs found in queue", {
-            waitingCount: this.processingJobs.size,
-            now,
-          });
           await this.delay(1000);
           continue;
         }
