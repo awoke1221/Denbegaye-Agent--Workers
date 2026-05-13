@@ -189,7 +189,10 @@ class AdvancedWorkflowBuilder {
                 },
             };
             if (result.success === false) {
-                const errorMessage = result.error || result.data?.error || result.data?.message || "Node execution failed";
+                const errorMessage = result.error ||
+                    result.data?.error ||
+                    result.data?.message ||
+                    "Node execution failed";
                 updatedState = langgraphState_1.StateUtils.addStreamEvent(updatedState, {
                     type: "node_error",
                     nodeId,

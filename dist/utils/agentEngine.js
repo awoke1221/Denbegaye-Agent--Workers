@@ -519,6 +519,10 @@ class AdvancedWorkflowExecutor {
      * Determine if execution should abort based on failure
      */
     shouldAbortExecution(node, error) {
+        // Abort on strict failure policy
+        if (this.context.stopOnFailure) {
+            return true;
+        }
         // Abort on critical infrastructure failures
         if (error.includes("authentication") || error.includes("authorization")) {
             return true;
@@ -674,6 +678,7 @@ async function executeWorkflow(nodes, edges, input, apiKeys, executionId, userId
                 maxRetries: 2,
                 enablePartialSuccess: true,
                 enableCompensation: true,
+                stopOnFailure: true,
                 circuitBreakerThreshold: 5,
                 executionTimeout: 300000, // 5 minutes
             });
