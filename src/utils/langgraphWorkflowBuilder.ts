@@ -53,9 +53,7 @@ function resolvePreviousOutput(
   nodeResults: Record<string, any>,
   edges: WorkflowEdgeConfig[],
 ): any {
-  const incomingEdges = edges.filter(
-    (e) => e.target === nodeId,
-  );
+  const incomingEdges = edges.filter((e) => e.target === nodeId);
 
   if (incomingEdges.length === 0) return {};
 

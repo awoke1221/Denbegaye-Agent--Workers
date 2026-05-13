@@ -104,7 +104,9 @@ const aiHandler = async (context: any) => {
           nodeType,
         },
       },
-      logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+      logs: [
+        `${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`,
+      ],
     };
   } catch (error) {
     logger.error(`AI handler error for ${nodeType}:`, error);
@@ -234,7 +236,9 @@ const openaiHandler = async (context: any) => {
           nodeType,
         },
       },
-      logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+      logs: [
+        `${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`,
+      ],
     };
   } catch (error) {
     logger.error(`OpenAI handler error:`, error);
@@ -298,7 +302,9 @@ const anthropicHandler = async (context: any) => {
           nodeType,
         },
       },
-      logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+      logs: [
+        `${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`,
+      ],
     };
   } catch (error) {
     logger.error(`Anthropic handler error:`, error);
@@ -362,7 +368,9 @@ const groqHandler = async (context: any) => {
           nodeType,
         },
       },
-      logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+      logs: [
+        `${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`,
+      ],
     };
   } catch (error) {
     logger.error(`Groq handler error:`, error);
@@ -426,7 +434,9 @@ const geminiHandler = async (context: any) => {
           nodeType,
         },
       },
-      logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+      logs: [
+        `${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`,
+      ],
     };
   } catch (error) {
     logger.error(`Gemini handler error:`, error);
@@ -490,7 +500,9 @@ const deepseekHandler = async (context: any) => {
           nodeType,
         },
       },
-      logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+      logs: [
+        `${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`,
+      ],
     };
   } catch (error) {
     logger.error(`DeepSeek handler error:`, error);
