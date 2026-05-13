@@ -20,6 +20,7 @@ import {
 } from "../utils/streamingExecutionEngine";
 import { createWorkflowBuilder } from "../utils/langgraphWorkflowBuilder";
 import { StreamEvent } from "../utils/langgraphState";
+import { getBufferedSocketEvents } from "../utils/socket";
 
 export function createLangGraphRoutes(io: SocketIOServer): Router {
   const router = Router();
@@ -245,7 +246,22 @@ export function setupLangGraphWebSocket(io: SocketIOServer): void {
       });
 
       cleanupSubscription(executionId);
-      socket.join(`execution:${executionId}`);
+      const room = `execution:${executionId}`;
+      socket.join(room);
+
+      const bufferedEvents = getBufferedSocketEvents(room);
+      if (bufferedEvents.length > 0) {
+        console.log(
+          "[buffer] replaying",
+          bufferedEvents.length,
+          "events for",
+          executionId,
+        );
+        logger.debug(
+          `[buffer] replaying ${bufferedEvents.length} events for ${executionId}`,
+        );
+        bufferedEvents.forEach(({ event, data }) => socket.emit(event, data));
+      }
 
       const streamContext = createStreamingContext(executionId);
       const unsubscribe = streamContext.subscribe((event: StreamEvent) => {

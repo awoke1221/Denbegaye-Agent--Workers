@@ -11,6 +11,7 @@ const supabaseClient_1 = require("../utils/supabaseClient");
 const validation_1 = require("../utils/validation");
 const logger_1 = require("../utils/logger");
 const streamingExecutionEngine_1 = require("../utils/streamingExecutionEngine");
+const socket_1 = require("../utils/socket");
 function createLangGraphRoutes(io) {
     const router = (0, express_1.Router)();
     /**
@@ -188,7 +189,14 @@ function setupLangGraphWebSocket(io) {
                 executionId,
             });
             cleanupSubscription(executionId);
-            socket.join(`execution:${executionId}`);
+            const room = `execution:${executionId}`;
+            socket.join(room);
+            const bufferedEvents = (0, socket_1.getBufferedSocketEvents)(room);
+            if (bufferedEvents.length > 0) {
+                console.log("[buffer] replaying", bufferedEvents.length, "events for", executionId);
+                logger_1.logger.debug(`[buffer] replaying ${bufferedEvents.length} events for ${executionId}`);
+                bufferedEvents.forEach(({ event, data }) => socket.emit(event, data));
+            }
             const streamContext = (0, streamingExecutionEngine_1.createStreamingContext)(executionId);
             const unsubscribe = streamContext.subscribe((event) => {
                 socket.emit("execution:update", event);

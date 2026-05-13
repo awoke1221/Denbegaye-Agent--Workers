@@ -197,31 +197,74 @@ const agentRunHandler = async (req, res) => {
                 .select("id, user_id, status")
                 .eq("id", executionId)
                 .single();
-            if (existingExecError ||
-                !existingExecution ||
-                existingExecution.user_id !== userId) {
-                return res
-                    .status(404)
-                    .json({ error: "Execution not found or access denied" });
-            }
-            if (existingExecution.status === "completed") {
-                return res.status(400).json({ error: "Execution already completed" });
-            }
-            const updateResult = await supabaseClient_1.supabase
-                .from("agent_executions")
-                .update({
-                status: "queued",
-                started_at: null,
-                completed_at: null,
-                error_message: null,
-                input_data: input,
-            })
-                .eq("id", executionId);
-            if (updateResult.error) {
+            if (existingExecError && existingExecError.code !== "PGRST116") {
                 return res.status(500).json({
-                    error: "Failed to update existing execution",
-                    details: updateResult.error.message,
+                    error: "Failed to verify provided execution ID",
+                    details: existingExecError.message,
                 });
+            }
+            if (existingExecution) {
+                if (existingExecution.user_id !== userId) {
+                    return res
+                        .status(404)
+                        .json({ error: "Execution not found or access denied" });
+                }
+                if (existingExecution.status === "completed") {
+                    return res.status(400).json({ error: "Execution already completed" });
+                }
+                if (existingExecution.status === "queued" ||
+                    existingExecution.status === "running") {
+                    executionId = existingExecution.id;
+                }
+                else {
+                    const updateResult = await supabaseClient_1.supabase
+                        .from("agent_executions")
+                        .update({
+                        status: "queued",
+                        started_at: null,
+                        completed_at: null,
+                        error_message: null,
+                        input_data: input,
+                    })
+                        .eq("id", executionId);
+                    if (updateResult.error) {
+                        return res.status(500).json({
+                            error: "Failed to update existing execution",
+                            details: updateResult.error.message,
+                        });
+                    }
+                }
+            }
+            else {
+                const executionData = {
+                    id: executionId,
+                    user_id: userId,
+                    idempotency_key: idempotencyKey,
+                    status: "queued",
+                    input_data: input,
+                    started_at: new Date().toISOString(),
+                };
+                // Only include agent_id if it's not a temporary ID
+                if (!agentId.startsWith("temp_")) {
+                    executionData.agent_id = agentId;
+                }
+                else {
+                    executionData.agent_id = null;
+                }
+                const executionInsert = await supabaseClient_1.supabase
+                    .from("agent_executions")
+                    .insert(executionData)
+                    .select("id")
+                    .single();
+                if (executionInsert.error || !executionInsert.data?.id) {
+                    console.error("Execution insert error:", executionInsert.error);
+                    return res.status(500).json({
+                        error: "Failed to create execution record",
+                        details: executionInsert.error?.message ||
+                            JSON.stringify(executionInsert.error),
+                    });
+                }
+                executionId = executionInsert.data.id;
             }
         }
         else {
