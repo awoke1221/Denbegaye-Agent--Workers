@@ -210,7 +210,7 @@ class DatabaseQueue {
   private processing = false;
   private dbProcessing = false;
   private redisProcessing = false;
-  private maxConcurrency = 100;
+  private maxConcurrency = 1000;
   private processingJobs = new Set<string>();
   private started = false;
 

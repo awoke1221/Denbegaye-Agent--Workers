@@ -152,7 +152,7 @@ class DatabaseQueue {
         this.processing = false;
         this.dbProcessing = false;
         this.redisProcessing = false;
-        this.maxConcurrency = 100;
+        this.maxConcurrency = 1000;
         this.processingJobs = new Set();
         this.started = false;
     }

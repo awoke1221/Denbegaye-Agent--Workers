@@ -48,6 +48,55 @@ export interface WorkflowConfig {
   streamingInterval?: number;
 }
 
+function resolvePreviousOutput(
+  nodeId: string,
+  nodeResults: Record<string, any>,
+  edges: WorkflowEdgeConfig[],
+): any {
+  const incomingEdges = edges.filter(
+    (e) => e.target === nodeId,
+  );
+
+  if (incomingEdges.length === 0) return {};
+
+  if (incomingEdges.length === 1) {
+    const parentId = incomingEdges[0].source;
+    const parentResult = nodeResults[parentId];
+    return parentResult?.output || parentResult || {};
+  }
+
+  return incomingEdges.reduce((acc, edge) => {
+    const parentId = edge.source;
+    const parentResult = nodeResults[parentId];
+    const parentOutput = parentResult?.output || parentResult || {};
+    return { ...acc, ...parentOutput };
+  }, {});
+}
+
+function interpolateConfig(
+  config: Record<string, any>,
+  nodeResults: Record<string, any>,
+): Record<string, any> {
+  if (!config) return {};
+  const result = { ...config };
+
+  for (const [key, value] of Object.entries(result)) {
+    if (typeof value === "string" && value.includes("{{")) {
+      result[key] = value.replace(/\{\{([^}]+)\}\}/g, (match, path) => {
+        const parts = path.trim().split(".");
+        let resolved: any = nodeResults;
+        for (const part of parts) {
+          resolved = resolved?.[part];
+          if (resolved === undefined) return match;
+        }
+        return String(resolved ?? match);
+      });
+    }
+  }
+
+  return result;
+}
+
 /**
  * Advanced LangGraph Workflow Builder
  */
@@ -190,18 +239,52 @@ export class AdvancedWorkflowBuilder {
     };
 
     try {
-      // Prepare node input
-      const nodeInput = this.prepareNodeInput(state, nodeConfig);
+      const currentNodeResults = state.nodeResults || {};
+      const edges = this.config.edges || [];
+
+      const previousOutput = resolvePreviousOutput(
+        nodeId,
+        currentNodeResults,
+        edges,
+      );
+
+      const resolvedConfig = interpolateConfig(
+        nodeConfig.config || {},
+        currentNodeResults,
+      );
+
+      const context = {
+        nodeId,
+        nodeType: nodeConfig.type,
+        config: resolvedConfig,
+        input: previousOutput,
+        previousOutputs: currentNodeResults,
+        apiKeys: this.config.apiKeys,
+      };
+
+      // Debug logs
+      console.log(
+        `[data-passing] Node ${nodeId} (${nodeConfig.type}) input:`,
+        JSON.stringify(previousOutput).slice(0, 200),
+      );
+      console.log(
+        `[data-passing] Node ${nodeId} resolved config:`,
+        JSON.stringify(resolvedConfig).slice(0, 200),
+      );
 
       // Execute the node tool
       const result = await this.toolExecutor.executeNodeTool(
         nodeId,
-        nodeInput,
+        context,
         state,
       );
 
       const endTime = new Date();
 
+      console.log(
+        `[data-passing] Node ${nodeId} output:`,
+        JSON.stringify(result?.data?.output || result?.data).slice(0, 200),
+      );
       // Update state with result
       updatedState = StateUtils.updateNodeResult(
         updatedState,

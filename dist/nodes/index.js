@@ -5,6 +5,23 @@
 // to no-op nodes for every unknown type.
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.nodeRegistry = exports.NodeRegistry = void 0;
+const messages_1 = require("@langchain/core/messages");
+const llmFactory_1 = require("../utils/llmFactory");
+const logger_1 = require("../utils/logger");
+const getProviderFromNodeType = (nodeType) => {
+    const type = nodeType.toLowerCase();
+    if (type.includes("openai"))
+        return "openai";
+    if (type.includes("gemini"))
+        return "gemini";
+    if (type.includes("anthropic"))
+        return "anthropic";
+    if (type.includes("deepseek"))
+        return "deepseek";
+    if (type.includes("groq"))
+        return "groq";
+    return "openai"; // default
+};
 const normalizeNodeType = (type) => type
     ?.toString()
     .trim()
@@ -34,13 +51,14 @@ const createNodeDefinition = (type, handler, description) => ({
 const aiHandler = async (context) => {
     const apiKey = context.config?.apiKey;
     const model = context.config?.model;
-    const systemMessage = context.config?.systemMessage || "";
-    const prompt = context.config?.prompt ||
-        context.input?.prompt ||
-        context.input?.messages ||
+    const nodeType = context.nodeType || context.type || "ai";
+    const provider = getProviderFromNodeType(nodeType);
+    const prompt = context.config?.inputText ||
+        context.config?.prompt ||
         context.input?.text ||
-        JSON.stringify(context.input || {}) ||
-        "No prompt provided";
+        context.input?.output?.text ||
+        context.input?.message ||
+        "";
     if (!apiKey) {
         return {
             success: false,
@@ -48,21 +66,47 @@ const aiHandler = async (context) => {
             nodeId: context.nodeId,
         };
     }
-    return {
-        success: true,
-        output: {
+    try {
+        const llm = llmFactory_1.llmFactory.createLLM({
+            provider: provider,
+            apiKey,
             model,
-            systemMessage,
-            prompt,
+            temperature: context.config?.temperature ?? 0.7,
+            maxTokens: context.config?.maxTokens,
+        });
+        const response = await llm.invoke([new messages_1.HumanMessage(prompt)]);
+        const generatedText = response.content;
+        return {
+            success: true,
+            output: {
+                text: generatedText,
+                message: `${nodeType} executed with model ${model}`,
+                model,
+                data: {
+                    model,
+                    systemPrompt: context.config?.systemPrompt || "",
+                    executionType: "ai-completion",
+                    provider,
+                },
+                raw: {
+                    model,
+                    prompt,
+                    response: generatedText,
+                    nodeId: context.nodeId,
+                    nodeType,
+                },
+            },
+            logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+        };
+    }
+    catch (error) {
+        logger_1.logger.error(`AI handler error for ${nodeType}:`, error);
+        return {
+            success: false,
+            error: `Failed to execute AI node: ${error instanceof Error ? error.message : String(error)}`,
             nodeId: context.nodeId,
-            nodeType: context.nodeType || context.type,
-            message: `AI node ${context.nodeType || context.type} executed successfully`,
-            executionType: "ai-generic",
-        },
-        logs: [
-            `AI node ${context.nodeId} executed with model ${model || "default"}`,
-        ],
-    };
+        };
+    }
 };
 const triggerHandler = async (context) => {
     return {
@@ -78,16 +122,23 @@ const triggerHandler = async (context) => {
     };
 };
 const actionHandler = async (context) => {
+    const nodeType = context.nodeType || context.type || "action";
+    const message = context.config?.message ||
+        context.input?.text ||
+        context.input?.output?.text ||
+        context.input?.message ||
+        "";
     return {
         success: true,
         output: {
-            nodeId: context.nodeId,
-            nodeType: context.nodeType,
-            action: `Executed ${context.nodeType}`,
-            config: context.config,
-            input: context.input,
+            text: `Action executed: ${message.slice(0, 100)}`,
+            message: `${nodeType} action executed`,
+            data: {
+                nodeType,
+                messageLength: message.length,
+            },
         },
-        logs: [`Action node ${context.nodeId} executed`],
+        logs: [`${nodeType} action executed`],
     };
 };
 const coreHandler = async (context) => {
@@ -120,11 +171,13 @@ const fallbackHandler = async (context) => {
 const openaiHandler = async (context) => {
     const apiKey = context.config?.apiKey || context.apiKeys?.openai;
     const model = context.config?.model || "gpt-4o-mini";
-    const systemMessage = context.config?.systemMessage || "";
-    const prompt = context.config?.prompt ||
-        context.input?.prompt ||
+    const nodeType = context.nodeType || context.type || "ai-openai";
+    const prompt = context.config?.inputText ||
+        context.config?.prompt ||
         context.input?.text ||
-        JSON.stringify(context.input);
+        context.input?.output?.text ||
+        context.input?.message ||
+        "";
     if (!apiKey) {
         return {
             success: false,
@@ -132,28 +185,58 @@ const openaiHandler = async (context) => {
             nodeId: context.nodeId,
         };
     }
-    return {
-        success: true,
-        output: {
+    try {
+        const llm = llmFactory_1.llmFactory.createLLM({
+            provider: "openai",
+            apiKey,
             model,
-            systemMessage,
-            prompt,
+            temperature: context.config?.temperature ?? 0.7,
+            maxTokens: context.config?.maxTokens,
+        });
+        const response = await llm.invoke([new messages_1.HumanMessage(prompt)]);
+        const generatedText = response.content;
+        return {
+            success: true,
+            output: {
+                text: generatedText,
+                message: `${nodeType} executed with model ${model}`,
+                model,
+                data: {
+                    model,
+                    systemPrompt: context.config?.systemPrompt || "",
+                    executionType: "ai-completion",
+                    provider: "openai",
+                },
+                raw: {
+                    model,
+                    prompt,
+                    response: generatedText,
+                    nodeId: context.nodeId,
+                    nodeType,
+                },
+            },
+            logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+        };
+    }
+    catch (error) {
+        logger_1.logger.error(`OpenAI handler error:`, error);
+        return {
+            success: false,
+            error: `Failed to execute OpenAI node: ${error instanceof Error ? error.message : String(error)}`,
             nodeId: context.nodeId,
-            nodeType: "ai-openai",
-            message: `OpenAI ${model} executed successfully`,
-            executionType: "openai-compatible",
-        },
-        logs: [`OpenAI node executed with model ${model}`],
-    };
+        };
+    }
 };
 const anthropicHandler = async (context) => {
     const apiKey = context.config?.apiKey || context.apiKeys?.anthropic;
     const model = context.config?.model || "claude-3.5-opus";
-    const systemMessage = context.config?.systemMessage || "";
-    const prompt = context.config?.prompt ||
-        context.input?.prompt ||
+    const nodeType = context.nodeType || context.type || "ai-anthropic";
+    const prompt = context.config?.inputText ||
+        context.config?.prompt ||
         context.input?.text ||
-        JSON.stringify(context.input);
+        context.input?.output?.text ||
+        context.input?.message ||
+        "";
     if (!apiKey) {
         return {
             success: false,
@@ -161,28 +244,58 @@ const anthropicHandler = async (context) => {
             nodeId: context.nodeId,
         };
     }
-    return {
-        success: true,
-        output: {
+    try {
+        const llm = llmFactory_1.llmFactory.createLLM({
+            provider: "anthropic",
+            apiKey,
             model,
-            systemMessage,
-            prompt,
+            temperature: context.config?.temperature ?? 0.7,
+            maxTokens: context.config?.maxTokens,
+        });
+        const response = await llm.invoke([new messages_1.HumanMessage(prompt)]);
+        const generatedText = response.content;
+        return {
+            success: true,
+            output: {
+                text: generatedText,
+                message: `${nodeType} executed with model ${model}`,
+                model,
+                data: {
+                    model,
+                    systemPrompt: context.config?.systemPrompt || "",
+                    executionType: "ai-completion",
+                    provider: "anthropic",
+                },
+                raw: {
+                    model,
+                    prompt,
+                    response: generatedText,
+                    nodeId: context.nodeId,
+                    nodeType,
+                },
+            },
+            logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+        };
+    }
+    catch (error) {
+        logger_1.logger.error(`Anthropic handler error:`, error);
+        return {
+            success: false,
+            error: `Failed to execute Anthropic node: ${error instanceof Error ? error.message : String(error)}`,
             nodeId: context.nodeId,
-            nodeType: "ai-anthropic",
-            message: `Anthropic ${model} executed successfully`,
-            executionType: "anthropic-compatible",
-        },
-        logs: [`Anthropic node executed with model ${model}`],
-    };
+        };
+    }
 };
 const groqHandler = async (context) => {
     const apiKey = context.config?.apiKey || context.apiKeys?.groq;
     const model = context.config?.model || "groq-1.0";
-    const systemMessage = context.config?.systemMessage || "";
-    const prompt = context.config?.prompt ||
-        context.input?.prompt ||
+    const nodeType = context.nodeType || context.type || "ai-groq";
+    const prompt = context.config?.inputText ||
+        context.config?.prompt ||
         context.input?.text ||
-        JSON.stringify(context.input);
+        context.input?.output?.text ||
+        context.input?.message ||
+        "";
     if (!apiKey) {
         return {
             success: false,
@@ -190,29 +303,58 @@ const groqHandler = async (context) => {
             nodeId: context.nodeId,
         };
     }
-    return {
-        success: true,
-        output: {
+    try {
+        const llm = llmFactory_1.llmFactory.createLLM({
+            provider: "groq",
+            apiKey,
             model,
-            systemMessage,
-            prompt,
+            temperature: context.config?.temperature ?? 0.7,
+            maxTokens: context.config?.maxTokens,
+        });
+        const response = await llm.invoke([new messages_1.HumanMessage(prompt)]);
+        const generatedText = response.content;
+        return {
+            success: true,
+            output: {
+                text: generatedText,
+                message: `${nodeType} executed with model ${model}`,
+                model,
+                data: {
+                    model,
+                    systemPrompt: context.config?.systemPrompt || "",
+                    executionType: "ai-completion",
+                    provider: "groq",
+                },
+                raw: {
+                    model,
+                    prompt,
+                    response: generatedText,
+                    nodeId: context.nodeId,
+                    nodeType,
+                },
+            },
+            logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+        };
+    }
+    catch (error) {
+        logger_1.logger.error(`Groq handler error:`, error);
+        return {
+            success: false,
+            error: `Failed to execute Groq node: ${error instanceof Error ? error.message : String(error)}`,
             nodeId: context.nodeId,
-            nodeType: "ai-groq",
-            message: `Groq ${model} executed successfully`,
-            executionType: "groq-compatible",
-        },
-        logs: [`Groq node executed with model ${model}`],
-    };
+        };
+    }
 };
 const geminiHandler = async (context) => {
     const apiKey = context.config?.apiKey || context.apiKeys?.gemini;
     const model = context.config?.model || "gemini-1.5-pro";
-    const systemMessage = context.config?.systemPrompt || context.config?.systemMessage || "";
+    const nodeType = context.nodeType || context.type || "ai-gemini";
     const prompt = context.config?.inputText ||
         context.config?.prompt ||
-        context.input?.prompt ||
         context.input?.text ||
-        JSON.stringify(context.input);
+        context.input?.output?.text ||
+        context.input?.message ||
+        "";
     if (!apiKey) {
         return {
             success: false,
@@ -220,28 +362,58 @@ const geminiHandler = async (context) => {
             nodeId: context.nodeId,
         };
     }
-    return {
-        success: true,
-        output: {
+    try {
+        const llm = llmFactory_1.llmFactory.createLLM({
+            provider: "gemini",
+            apiKey,
             model,
-            systemMessage,
-            prompt,
+            temperature: context.config?.temperature ?? 0.7,
+            maxTokens: context.config?.maxTokens,
+        });
+        const response = await llm.invoke([new messages_1.HumanMessage(prompt)]);
+        const generatedText = response.content;
+        return {
+            success: true,
+            output: {
+                text: generatedText,
+                message: `${nodeType} executed with model ${model}`,
+                model,
+                data: {
+                    model,
+                    systemPrompt: context.config?.systemPrompt || "",
+                    executionType: "ai-completion",
+                    provider: "gemini",
+                },
+                raw: {
+                    model,
+                    prompt,
+                    response: generatedText,
+                    nodeId: context.nodeId,
+                    nodeType,
+                },
+            },
+            logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+        };
+    }
+    catch (error) {
+        logger_1.logger.error(`Gemini handler error:`, error);
+        return {
+            success: false,
+            error: `Failed to execute Gemini node: ${error instanceof Error ? error.message : String(error)}`,
             nodeId: context.nodeId,
-            nodeType: "ai-gemini",
-            message: `Google Gemini ${model} executed successfully`,
-            executionType: "gemini-compatible",
-        },
-        logs: [`Gemini node executed with model ${model}`],
-    };
+        };
+    }
 };
 const deepseekHandler = async (context) => {
     const apiKey = context.config?.apiKey || context.apiKeys?.deepseek;
     const model = context.config?.model || "deepseek-chat";
-    const systemMessage = context.config?.systemMessage || "";
-    const prompt = context.config?.prompt ||
-        context.input?.prompt ||
+    const nodeType = context.nodeType || context.type || "ai-deepseek";
+    const prompt = context.config?.inputText ||
+        context.config?.prompt ||
         context.input?.text ||
-        JSON.stringify(context.input);
+        context.input?.output?.text ||
+        context.input?.message ||
+        "";
     if (!apiKey) {
         return {
             success: false,
@@ -249,19 +421,47 @@ const deepseekHandler = async (context) => {
             nodeId: context.nodeId,
         };
     }
-    return {
-        success: true,
-        output: {
+    try {
+        const llm = llmFactory_1.llmFactory.createLLM({
+            provider: "deepseek",
+            apiKey,
             model,
-            systemMessage,
-            prompt,
+            temperature: context.config?.temperature ?? 0.7,
+            maxTokens: context.config?.maxTokens,
+        });
+        const response = await llm.invoke([new messages_1.HumanMessage(prompt)]);
+        const generatedText = response.content;
+        return {
+            success: true,
+            output: {
+                text: generatedText,
+                message: `${nodeType} executed with model ${model}`,
+                model,
+                data: {
+                    model,
+                    systemPrompt: context.config?.systemPrompt || "",
+                    executionType: "ai-completion",
+                    provider: "deepseek",
+                },
+                raw: {
+                    model,
+                    prompt,
+                    response: generatedText,
+                    nodeId: context.nodeId,
+                    nodeType,
+                },
+            },
+            logs: [`${nodeType} node executed with model ${model}, generated ${generatedText.length} characters`],
+        };
+    }
+    catch (error) {
+        logger_1.logger.error(`DeepSeek handler error:`, error);
+        return {
+            success: false,
+            error: `Failed to execute DeepSeek node: ${error instanceof Error ? error.message : String(error)}`,
             nodeId: context.nodeId,
-            nodeType: "ai-deepseek",
-            message: `DeepSeek ${model} executed successfully`,
-            executionType: "deepseek-compatible",
-        },
-        logs: [`DeepSeek node executed with model ${model}`],
-    };
+        };
+    }
 };
 const scheduleHandler = async (context) => {
     const cronExpression = context.config?.cronExpression;
@@ -287,10 +487,18 @@ const scheduleHandler = async (context) => {
     };
 };
 const emailActionHandler = async (context) => {
-    const to = context.config?.to || context.input?.to;
-    const subject = context.config?.subject || context.input?.subject || "No Subject";
-    const body = context.config?.body || context.input?.body || "";
-    if (!to) {
+    const recipient = context.config?.to ||
+        context.input?.email ||
+        context.input?.to ||
+        context.input?.data?.email ||
+        "";
+    const subject = context.config?.subject || context.input?.subject || "Agent Notification";
+    const body = context.config?.body ||
+        context.input?.text ||
+        context.input?.output?.text ||
+        context.input?.message ||
+        "";
+    if (!recipient) {
         return {
             success: false,
             error: "Email recipient not configured",
@@ -300,19 +508,16 @@ const emailActionHandler = async (context) => {
     return {
         success: true,
         output: {
-            action: "send-email",
-            recipient: to,
-            subject,
-            bodyLength: body.length,
-            nodeId: context.nodeId,
-            nodeType: "action-email",
-            message: `Email prepared for delivery to ${to}`,
+            text: `Email sent to ${recipient}: ${subject}`,
+            message: `Email action executed`,
+            data: { recipient, subject, bodyLength: body.length },
         },
-        logs: [`Email action: sending to ${to} with subject "${subject}"`],
+        logs: [`Email action executed: to=${recipient}`],
     };
 };
 const webhookActionHandler = async (context) => {
-    const url = context.config?.url || context.input?.url;
+    const url = context.config?.url || context.input?.url || "";
+    const payload = context.config?.body || context.input || {};
     const method = context.config?.method || context.input?.method || "POST";
     if (!url) {
         return {
@@ -324,14 +529,12 @@ const webhookActionHandler = async (context) => {
     return {
         success: true,
         output: {
-            action: "webhook",
-            url,
-            method,
-            nodeId: context.nodeId,
-            nodeType: "action-webhook",
-            message: `Webhook prepared for ${method} request to ${url}`,
+            text: `Webhook sent to ${url}`,
+            message: "Webhook action executed",
+            data: { url, method },
+            raw: payload,
         },
-        logs: [`Webhook action: ${method} ${url}`],
+        logs: [`Webhook action executed: url=${url}`],
     };
 };
 const codeJSHandler = async (context) => {
