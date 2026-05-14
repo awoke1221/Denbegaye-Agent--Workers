@@ -311,6 +311,47 @@ function validateNodeConfig(node: AgentNode): {
           `Node ${node.id}: Email action nodes require recipient configuration`,
         );
       }
+
+      // Provider-specific validation
+      const provider = node.config?.provider;
+      if (provider === "smtp") {
+        if (!node.config?.smtpHost) {
+          errors.push(`Node ${node.id}: SMTP Host is required`);
+        }
+        if (!node.config?.smtpPort) {
+          errors.push(`Node ${node.id}: SMTP Port is required`);
+        }
+        if (!node.config?.smtpUser) {
+          errors.push(`Node ${node.id}: SMTP User is required`);
+        }
+        if (!node.config?.smtpPassword) {
+          errors.push(`Node ${node.id}: SMTP Password is required`);
+        }
+      } else if (provider === "sendgrid") {
+        if (!node.config?.sendgridApiKey) {
+          errors.push(`Node ${node.id}: SendGrid API Key is required`);
+        }
+        if (!node.config?.sendgridFromEmail) {
+          errors.push(`Node ${node.id}: SendGrid From Email is required`);
+        }
+      } else if (provider === "mailgun") {
+        if (!node.config?.mailgunApiKey) {
+          errors.push(`Node ${node.id}: Mailgun API Key is required`);
+        }
+        if (!node.config?.mailgunDomain) {
+          errors.push(`Node ${node.id}: Mailgun Domain is required`);
+        }
+      } else if (provider === "ses") {
+        if (!node.config?.awsRegion) {
+          errors.push(`Node ${node.id}: AWS Region is required`);
+        }
+        if (!node.config?.awsAccessKey) {
+          errors.push(`Node ${node.id}: AWS Access Key is required`);
+        }
+        if (!node.config?.awsSecretKey) {
+          errors.push(`Node ${node.id}: AWS Secret Key is required`);
+        }
+      }
       break;
 
     case "action-webhook":
