@@ -484,7 +484,45 @@ async function processJobFunction(jobData, jobId) {
             nodeCount: config?.nodes?.length || 0,
             edgeCount: config?.edges?.length || 0,
         });
-        const result = await (0, agentEngine_1.executeWorkflow)(config?.nodes || [], config?.edges || [], input ?? {}, decryptedApiKeys, executionId, userId, {
+        // Ensure node configs meet validation requirements (e.g. transform nodes need expressions)
+        const nodesForExecution = (config?.nodes || []).map((node) => {
+            try {
+                const nodeType = String(node.type || "").toLowerCase();
+                const cfg = node.config || {};
+                // For transform/set nodes, ensure an expression exists; prefer explicit value/variables when present
+                if (["core-transform", "core-set"].includes(nodeType)) {
+                    const hasExpression = cfg.expression !== undefined &&
+                        cfg.expression !== null &&
+                        String(cfg.expression).trim() !== "";
+                    if (!hasExpression) {
+                        if (cfg.value !== undefined) {
+                            cfg.expression = cfg.value;
+                        }
+                        else if (cfg.variables !== undefined) {
+                            // store a simple expression representing the variables object
+                            cfg.expression = JSON.stringify(cfg.variables);
+                        }
+                        else {
+                            // default to passing through previous input
+                            cfg.expression = "{{input}}";
+                        }
+                        // update node config
+                        node.config = cfg;
+                        logger_1.logger.debug("Auto-filled expression for transform/set node", {
+                            executionId,
+                            nodeId: node.id,
+                            expression: cfg.expression,
+                        });
+                    }
+                }
+            }
+            catch (e) {
+                // don't block execution if normalization fails
+                logger_1.logger.warn("Failed to normalize node config", { node, error: e });
+            }
+            return node;
+        });
+        const result = await (0, agentEngine_1.executeWorkflow)(nodesForExecution, config?.edges || [], input ?? {}, decryptedApiKeys, executionId, userId, {
             onNodeStart: (nodeId) => {
                 logger_1.logger.debug("Node started", { executionId, nodeId });
                 // Emit node-started event to frontend

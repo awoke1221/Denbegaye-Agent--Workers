@@ -27,21 +27,29 @@ function resolvePreviousOutput(nodeId, nodeResults, edges) {
         return { ...acc, ...parentOutput };
     }, {});
 }
-function interpolateConfig(config, nodeResults) {
+function interpolateConfig(config, nodeResults, variables, state) {
     if (!config)
         return {};
     const result = { ...config };
     for (const [key, value] of Object.entries(result)) {
         if (typeof value === "string" && value.includes("{{")) {
             result[key] = value.replace(/\{\{([^}]+)\}\}/g, (match, path) => {
-                const parts = path.trim().split(".");
+                const trimmed = path.trim();
+                // Handle {{variables.X}} — look in state.variables
+                if (trimmed.startsWith("variables.")) {
+                    const varKey = trimmed.replace("variables.", "");
+                    const resolved = (state?.variables || variables || {})[varKey];
+                    return resolved !== undefined ? String(resolved) : match;
+                }
+                // Handle {{nodeId.output.field}} — existing logic
+                const parts = trimmed.split(".");
                 let resolved = nodeResults;
                 for (const part of parts) {
                     resolved = resolved?.[part];
                     if (resolved === undefined)
                         return match;
                 }
-                return String(resolved ?? match);
+                return resolved !== undefined ? String(resolved) : match;
             });
         }
     }
@@ -163,13 +171,14 @@ class AdvancedWorkflowBuilder {
             const currentNodeResults = state.nodeResults || {};
             const edges = this.config.edges || [];
             const previousOutput = resolvePreviousOutput(nodeId, currentNodeResults, edges);
-            const resolvedConfig = interpolateConfig(nodeConfig.config || {}, currentNodeResults);
+            const resolvedConfig = interpolateConfig(nodeConfig.config || {}, currentNodeResults, state.variables, state);
             const context = {
                 nodeId,
                 nodeType: nodeConfig.type,
                 config: resolvedConfig,
                 input: previousOutput,
                 previousOutputs: currentNodeResults,
+                variables: state.variables,
                 apiKeys: this.config.apiKeys,
             };
             // Debug logs
@@ -181,6 +190,18 @@ class AdvancedWorkflowBuilder {
             console.log(`[data-passing] Node ${nodeId} output:`, JSON.stringify(result?.data?.output || result?.data).slice(0, 200));
             // Update state with result
             updatedState = langgraphState_1.StateUtils.updateNodeResult(updatedState, nodeId, result.data);
+            // After core-set runs, merge its output into state.variables
+            if (nodeConfig.type === "core-set" && result.data?.output?.data) {
+                const newVars = result.data.output.data;
+                // Update state variables so downstream nodes can use them
+                updatedState = langgraphState_1.StateUtils.updateVariables(updatedState, newVars);
+            }
+            const nodeVariables = result.data?.output?.variables || result.data?.variables;
+            if (nodeVariables &&
+                typeof nodeVariables === "object" &&
+                !Array.isArray(nodeVariables)) {
+                updatedState = langgraphState_1.StateUtils.updateVariables(updatedState, nodeVariables);
+            }
             updatedState = {
                 ...updatedState,
                 nodeEndTimes: {

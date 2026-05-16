@@ -572,8 +572,46 @@ async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
       edgeCount: config?.edges?.length || 0,
     });
 
+    // Ensure node configs meet validation requirements (e.g. transform nodes need expressions)
+    const nodesForExecution = (config?.nodes || []).map((node: any) => {
+      try {
+        const nodeType = String(node.type || "").toLowerCase();
+        const cfg = node.config || {};
+
+        // For transform/set nodes, ensure an expression exists; prefer explicit value/variables when present
+        if (["core-transform", "core-set"].includes(nodeType)) {
+          const hasExpression =
+            cfg.expression !== undefined &&
+            cfg.expression !== null &&
+            String(cfg.expression).trim() !== "";
+          if (!hasExpression) {
+            if (cfg.value !== undefined) {
+              cfg.expression = cfg.value;
+            } else if (cfg.variables !== undefined) {
+              // store a simple expression representing the variables object
+              cfg.expression = JSON.stringify(cfg.variables);
+            } else {
+              // default to passing through previous input
+              cfg.expression = "{{input}}";
+            }
+            // update node config
+            node.config = cfg;
+            logger.debug("Auto-filled expression for transform/set node", {
+              executionId,
+              nodeId: node.id,
+              expression: cfg.expression,
+            });
+          }
+        }
+      } catch (e) {
+        // don't block execution if normalization fails
+        logger.warn("Failed to normalize node config", { node, error: e });
+      }
+      return node;
+    });
+
     const result = await executeWorkflow(
-      config?.nodes || [],
+      nodesForExecution,
       config?.edges || [],
       input ?? {},
       decryptedApiKeys,

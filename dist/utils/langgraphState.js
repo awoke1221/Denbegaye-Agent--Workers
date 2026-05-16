@@ -16,14 +16,26 @@ exports.AgentState = langgraph_1.Annotation.Root({
         reducer: (x, y) => x.concat(y),
     }),
     // Workflow context
-    workflowId: (langgraph_1.Annotation),
-    executionId: (langgraph_1.Annotation),
-    userId: (langgraph_1.Annotation),
+    workflowId: (0, langgraph_1.Annotation)({
+        reducer: (a, b) => b ?? a,
+        default: () => "",
+    }),
+    executionId: (0, langgraph_1.Annotation)({
+        reducer: (a, b) => b ?? a,
+        default: () => "",
+    }),
+    userId: (0, langgraph_1.Annotation)({
+        reducer: (a, b) => b ?? a,
+        default: () => "",
+    }),
     // Variables and configuration
     variables: (0, langgraph_1.Annotation)({
         reducer: (x, y) => ({ ...x, ...y }),
     }),
-    apiKeys: (langgraph_1.Annotation),
+    apiKeys: (0, langgraph_1.Annotation)({
+        reducer: (a, b) => ({ ...a, ...b }),
+        default: () => ({}),
+    }),
     // Memory systems
     shortTermMemory: (0, langgraph_1.Annotation)({
         reducer: (x, y) => ({ ...x, ...y }),
@@ -43,14 +55,23 @@ exports.AgentState = langgraph_1.Annotation.Root({
     nodeExecutionOrder: (0, langgraph_1.Annotation)({
         reducer: (x, y) => [...x, ...y],
     }),
-    nodeDependencies: (langgraph_1.Annotation),
+    nodeDependencies: (0, langgraph_1.Annotation)({
+        reducer: (a, b) => ({ ...a, ...b }),
+        default: () => ({}),
+    }),
     // Streaming and updates
     streamEvents: (0, langgraph_1.Annotation)({
         reducer: (x, y) => [...x, ...y],
     }),
     // Status tracking
-    status: (langgraph_1.Annotation),
-    currentNode: (langgraph_1.Annotation),
+    status: (0, langgraph_1.Annotation)({
+        reducer: (a, b) => b ?? a,
+        default: () => "idle",
+    }),
+    currentNode: (0, langgraph_1.Annotation)({
+        reducer: (a, b) => b ?? a,
+        default: () => null,
+    }),
     // Logs and debugging
     logs: (0, langgraph_1.Annotation)({
         reducer: (x, y) => [...x, ...y],
@@ -60,8 +81,14 @@ exports.AgentState = langgraph_1.Annotation.Root({
         reducer: (x, y) => [...x, ...y],
     }),
     // Timing information
-    startTime: (langgraph_1.Annotation),
-    endTime: (langgraph_1.Annotation),
+    startTime: (0, langgraph_1.Annotation)({
+        reducer: (a, b) => b ?? a,
+        default: () => new Date(),
+    }),
+    endTime: (0, langgraph_1.Annotation)({
+        reducer: (a, b) => b ?? a,
+        default: () => null,
+    }),
     nodeStartTimes: (0, langgraph_1.Annotation)({
         reducer: (x, y) => ({ ...x, ...y }),
     }),
@@ -72,7 +99,10 @@ exports.AgentState = langgraph_1.Annotation.Root({
     nodeRetryCount: (0, langgraph_1.Annotation)({
         reducer: (x, y) => ({ ...x, ...y }),
     }),
-    maxRetries: (langgraph_1.Annotation),
+    maxRetries: (0, langgraph_1.Annotation)({
+        reducer: (a, b) => b ?? a,
+        default: () => 3,
+    }),
     // Tool calls and results
     toolCalls: (0, langgraph_1.Annotation)({
         reducer: (x, y) => [...x, ...y],
@@ -210,6 +240,18 @@ exports.StateUtils = {
             nodeResults: {
                 ...state.nodeResults,
                 [nodeId]: result,
+            },
+        };
+    },
+    /**
+     * Update workflow variables
+     */
+    updateVariables(state, variables) {
+        return {
+            ...state,
+            variables: {
+                ...state.variables,
+                ...variables,
             },
         };
     },

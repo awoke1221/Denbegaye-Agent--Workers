@@ -4,9 +4,11 @@
 // to no-op nodes for every unknown type.
 
 import { HumanMessage } from "@langchain/core/messages";
+import { Parser } from "expr-eval";
 import { llmFactory } from "../utils/llmFactory";
 import { logger } from "../utils/logger";
 import { sendEmail, EmailOptions } from "../utils/emailService";
+import { supabase } from "../utils/supabaseClient";
 
 const getProviderFromNodeType = (nodeType: string): string => {
   const type = nodeType.toLowerCase();
@@ -25,6 +27,488 @@ const normalizeNodeType = (type: string) =>
     .toLowerCase()
     .replace(/[\s_]+/g, "-")
     .replace(/[^a-z0-9-]/g, "");
+
+const sanitizeExpression = (expression: any): string => {
+  if (expression === undefined || expression === null) {
+    return "";
+  }
+  const text = String(expression).trim();
+  const match = text.match(/^\{\{(.+)\}\}$/);
+  return match ? match[1].trim() : text;
+};
+
+const evaluateExpression = (expression: any, context: any): any => {
+  if (expression === undefined || expression === null || expression === "") {
+    return context.input;
+  }
+  if (typeof expression !== "string") {
+    return expression;
+  }
+
+  const sanitized = sanitizeExpression(expression);
+  try {
+    const parser = new Parser();
+    const expr = parser.parse(sanitized);
+    return expr.evaluate({
+      input: context.input,
+      variables: context.variables || {},
+      previousOutputs: context.previousOutputs || {},
+      config: context.config || {},
+    });
+  } catch (error) {
+    logger.warn("Expression evaluation failed", {
+      expression: sanitized,
+      error: error instanceof Error ? error.message : String(error),
+      nodeId: context.nodeId,
+    });
+    return sanitized;
+  }
+};
+
+const buildSetVariables = (context: any, value: any): Record<string, any> => {
+  if (
+    context.config?.variables &&
+    typeof context.config.variables === "object"
+  ) {
+    return context.config.variables;
+  }
+
+  const variableName =
+    context.config?.variableName ||
+    context.config?.variable ||
+    context.config?.name ||
+    context.config?.key;
+
+  if (typeof variableName === "string" && variableName.length > 0) {
+    return { [variableName]: value };
+  }
+
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+
+  return { value };
+};
+
+interface SearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+  source: string;
+}
+
+const searchViaDuckDuckGo = async (
+  query: string,
+  maxResults: number,
+): Promise<SearchResult[]> => {
+  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+  const response = await fetch(url, {
+    headers: { "User-Agent": "DenbegayeAgent/1.0" },
+  });
+
+  if (!response.ok) {
+    throw new Error(`DuckDuckGo HTTP ${response.status}`);
+  }
+
+  const data = (await response.json()) as any;
+  const results: SearchResult[] = [];
+
+  if (data.AbstractText) {
+    results.push({
+      title: data.Heading || query,
+      url: data.AbstractURL || "",
+      snippet: data.AbstractText,
+      source: data.AbstractSource || "DuckDuckGo",
+    });
+  }
+
+  const topics = (data.RelatedTopics || []) as any[];
+  for (const item of topics) {
+    if (results.length >= maxResults) break;
+    if (item.Text && item.FirstURL) {
+      results.push({
+        title: item.Text.split(" - ")[0] || item.Text.slice(0, 80),
+        url: item.FirstURL,
+        snippet: item.Text,
+        source: new URL(item.FirstURL).hostname,
+      });
+    }
+    if (item.Topics) {
+      for (const sub of item.Topics as any[]) {
+        if (results.length >= maxResults) break;
+        if (sub.Text && sub.FirstURL) {
+          results.push({
+            title: sub.Text.split(" - ")[0] || sub.Text.slice(0, 80),
+            url: sub.FirstURL,
+            snippet: sub.Text,
+            source: new URL(sub.FirstURL).hostname,
+          });
+        }
+      }
+    }
+  }
+
+  return results.slice(0, maxResults);
+};
+
+const searchViaSerpAPI = async (
+  query: string,
+  apiKey: string,
+  maxResults: number,
+): Promise<SearchResult[]> => {
+  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${encodeURIComponent(apiKey)}&num=${maxResults}&engine=google`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`SerpAPI HTTP ${response.status}`);
+  }
+
+  const data = (await response.json()) as any;
+  return (data.organic_results || []).slice(0, maxResults).map((item: any) => ({
+    title: item.title || "",
+    url: item.link || "",
+    snippet: item.snippet || "",
+    source: item.displayed_link || "",
+  }));
+};
+
+const searchViaBrave = async (
+  query: string,
+  apiKey: string,
+  maxResults: number,
+): Promise<SearchResult[]> => {
+  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${maxResults}`;
+  const response = await fetch(url, {
+    headers: {
+      "X-Subscription-Token": apiKey,
+      Accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Brave Search HTTP ${response.status}`);
+  }
+
+  const data = (await response.json()) as any;
+  return (data.web?.results || []).slice(0, maxResults).map((item: any) => ({
+    title: item.title || "",
+    url: item.url || "",
+    snippet: item.description || "",
+    source: item.meta_url?.netloc || "",
+  }));
+};
+
+const webSearchHandler = async (context: any) => {
+  const query =
+    context.config?.query ||
+    context.input?.query ||
+    context.input?.text ||
+    context.input?.output?.text ||
+    "";
+  const provider = (context.config?.provider || "duckduckgo").toString();
+  const maxResults = Number(context.config?.maxResults) || 5;
+  const apiKey = context.config?.apiKey || "";
+
+  if (!query || query.includes("{{")) {
+    return {
+      success: false,
+      error: `Search query is empty or unresolved: "${query}"`,
+      output: {
+        text: `Search failed: query not resolved`,
+        message: "Web search failed",
+        data: { query, reason: "empty_or_unresolved_query" },
+      },
+      logs: [`Web search failed: query="${query}"`],
+    };
+  }
+
+  logger.info(`[web-search] Searching: "${query}" via ${provider}`);
+
+  try {
+    let results: SearchResult[] = [];
+
+    if (provider === "serpapi" && apiKey && apiKey !== "awokezemenu") {
+      results = await searchViaSerpAPI(query, apiKey, maxResults);
+    } else if (provider === "brave" && apiKey && apiKey !== "awokezemenu") {
+      results = await searchViaBrave(query, apiKey, maxResults);
+    } else {
+      results = await searchViaDuckDuckGo(query, maxResults);
+    }
+
+    const resultsText = results.length
+      ? results
+          .map(
+            (r, i) => `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`,
+          )
+          .join("\n\n")
+      : `No results found for: ${query}`;
+
+    logger.info(`[web-search] Found ${results.length} results`);
+
+    return {
+      success: true,
+      output: {
+        text: resultsText,
+        message: `Found ${results.length} results`,
+        data: {
+          query,
+          provider,
+          results,
+          resultCount: results.length,
+        },
+      },
+      logs: [
+        `Web search: "${query}"`,
+        `Provider: ${provider}`,
+        `Results: ${results.length}`,
+      ],
+    };
+  } catch (error: any) {
+    logger.error(`[web-search] Error: ${error?.message || error}`);
+    return {
+      success: false,
+      error: `Search failed: ${error?.message || String(error)}`,
+      output: {
+        text: `Search failed: ${error?.message || String(error)}`,
+        message: "Web search failed",
+        data: { query, error: error?.message || String(error) },
+      },
+      logs: [`Web search error: ${error?.message || String(error)}`],
+    };
+  }
+};
+
+const coreHttpRequestHandler = async (context: any) => {
+  const url = context.config?.url || context.input?.url || "";
+  const method = (context.config?.method || "GET").toString().toUpperCase();
+  const headers = context.config?.headers
+    ? typeof context.config.headers === "string"
+      ? JSON.parse(context.config.headers)
+      : context.config.headers
+    : {};
+  const body = context.config?.body || context.input?.body || null;
+
+  if (!url) {
+    return {
+      success: false,
+      error: "URL is required",
+      output: {
+        text: "HTTP request failed: no URL",
+        message: "HTTP request failed",
+        data: { reason: "missing_url" },
+      },
+      logs: ["HTTP request failed: missing URL"],
+    };
+  }
+
+  const options: any = {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      ...headers,
+    },
+  };
+
+  if (body && method !== "GET") {
+    options.body = typeof body === "string" ? body : JSON.stringify(body);
+  }
+
+  const response = await fetch(url, options);
+  const responseText = await response.text();
+
+  let responseData: any;
+  try {
+    responseData = JSON.parse(responseText);
+  } catch {
+    responseData = responseText;
+  }
+
+  return {
+    success: response.ok,
+    output: {
+      text:
+        typeof responseData === "string"
+          ? responseData
+          : JSON.stringify(responseData, null, 2),
+      message: `HTTP ${method} ${url} → ${response.status}`,
+      data: {
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        body: responseData,
+      },
+    },
+    logs: [
+      `HTTP ${method} ${url}`,
+      `Status: ${response.status} ${response.statusText}`,
+    ],
+  };
+};
+
+const dataSupabaseHandler = async (context: any) => {
+  const table = context.config?.table || "";
+  const operation = (context.config?.operation || "select").toString();
+  const columns = context.config?.columns || "*";
+  const matchField = context.config?.matchField || "";
+  const matchValue = context.config?.matchValue || "";
+  const limit = Number(context.config?.limit) || 10;
+  const record = context.config?.record || context.input?.data || null;
+
+  if (!table) {
+    return {
+      success: false,
+      error: "Table name is required",
+      output: {
+        text: "Supabase failed: no table specified",
+        message: "Supabase operation failed",
+        data: { reason: "missing_table" },
+      },
+      logs: ["Supabase failed: missing table"],
+    };
+  }
+
+  let query: any = supabase.from(table);
+  let result: any;
+
+  if (operation === "select") {
+    let q = query.select(columns).limit(limit);
+    if (matchField && matchValue) {
+      q = q.eq(matchField, matchValue);
+    }
+    result = await q;
+  } else if (operation === "insert") {
+    result = await query.insert(record).select();
+  } else if (operation === "update") {
+    let q = query.update(record);
+    if (matchField && matchValue) {
+      q = q.eq(matchField, matchValue);
+    }
+    result = await q.select();
+  } else if (operation === "delete") {
+    let q = query.delete();
+    if (matchField && matchValue) {
+      q = q.eq(matchField, matchValue);
+    }
+    result = await q;
+  } else {
+    let q = query.select(columns).limit(limit);
+    if (matchField && matchValue) {
+      q = q.eq(matchField, matchValue);
+    }
+    result = await q;
+  }
+
+  if (result.error) {
+    return {
+      success: false,
+      error: `Supabase error: ${result.error.message}`,
+      output: {
+        text: `Supabase ${operation} failed: ${result.error.message}`,
+        message: "Supabase operation failed",
+        data: { error: result.error },
+      },
+      logs: [`Supabase error: ${result.error.message}`],
+    };
+  }
+
+  const rows = result.data || [];
+  const text = JSON.stringify(rows, null, 2);
+
+  return {
+    success: true,
+    output: {
+      text,
+      message: `Supabase ${operation} on ${table}: ${rows.length} rows`,
+      data: {
+        rows,
+        rowCount: rows.length,
+        table,
+        operation,
+      },
+    },
+    logs: [
+      `Supabase ${operation} on ${table}`,
+      `Rows affected: ${rows.length}`,
+    ],
+  };
+};
+
+const logicIfHandler = async (context: any) => {
+  const condition = context.config?.condition || "";
+  const input = context.input || {};
+
+  if (!condition) {
+    return {
+      success: false,
+      error: "Condition expression is required",
+      output: {
+        text: "IF node failed: no condition",
+        message: "IF condition failed",
+        data: { reason: "missing_condition" },
+      },
+      logs: ["IF node failed: missing condition"],
+    };
+  }
+
+  let result = false;
+  let error = "";
+
+  try {
+    const fn = new Function(
+      "input",
+      "data",
+      `"use strict"; return (${condition});`,
+    );
+    result = Boolean(fn(input, input?.data || {}));
+  } catch (err: any) {
+    error = err?.message || String(err);
+    result = false;
+  }
+
+  return {
+    success: true,
+    output: {
+      text: result ? "true" : "false",
+      message: `Condition "${condition}" = ${result}`,
+      data: {
+        condition,
+        result,
+        branch: result ? "true" : "false",
+        input,
+        error: error || undefined,
+      },
+    },
+    logs: [
+      `IF condition: ${condition}`,
+      `Result: ${result}`,
+      `Branch: ${result ? "true" : "false"}`,
+    ],
+  };
+};
+
+const logicDelayHandler = async (context: any) => {
+  const delayMs = Number(
+    context.config?.delayMs || context.config?.duration || 1000,
+  );
+  const maxDelay = 30000;
+  const actualDelay = Math.min(delayMs, maxDelay);
+
+  await new Promise((resolve) => setTimeout(resolve, actualDelay));
+
+  return {
+    success: true,
+    output: {
+      text: `Delayed ${actualDelay}ms`,
+      message: `Delay complete: ${actualDelay}ms`,
+      data: {
+        requestedDelay: delayMs,
+        actualDelay,
+        completedAt: new Date().toISOString(),
+        ...context.input,
+      },
+    },
+    logs: [`Delay: ${actualDelay}ms complete`],
+  };
+};
 
 export class NodeRegistry {
   private nodes: Map<string, any> = new Map();
@@ -120,16 +604,50 @@ const aiHandler = async (context: any) => {
 };
 
 const triggerHandler = async (context: any) => {
+  const rawInput =
+    context.config?.inputSchema ||
+    context.config?.input ||
+    context.input?.text ||
+    "";
+
+  const market =
+    context.config?.market ||
+    context.config?.fields?.market ||
+    context.input?.market ||
+    "";
+  const topic =
+    context.config?.topic ||
+    context.config?.fields?.topic ||
+    context.input?.topic ||
+    rawInput;
+  const timeScope =
+    context.config?.timeScope ||
+    context.config?.fields?.timeScope ||
+    context.input?.timeScope ||
+    "last 6 months";
+
+  const resolvedMarket = market || "General";
+  const resolvedTopic = topic || rawInput;
+  const resolvedTimeScope = timeScope || "last 6 months";
+
   return {
     success: true,
     output: {
-      nodeId: context.nodeId,
-      nodeType: context.nodeType,
-      triggered: true,
-      config: context.config,
-      input: context.input,
+      text: rawInput,
+      message: "Manual trigger executed",
+      data: {
+        rawInput,
+        triggeredAt: new Date().toISOString(),
+      },
+      market: resolvedMarket,
+      topic: resolvedTopic,
+      timeScope: resolvedTimeScope,
     },
-    logs: [`Trigger node ${context.nodeId} executed`],
+    logs: [
+      `Manual trigger: market="${resolvedMarket}"`,
+      `topic="${resolvedTopic}"`,
+      `timeScope="${resolvedTimeScope}"`,
+    ],
   };
 };
 
@@ -157,16 +675,75 @@ const actionHandler = async (context: any) => {
 };
 
 const coreHandler = async (context: any) => {
-  return {
-    success: true,
-    output: {
-      nodeId: context.nodeId,
-      nodeType: context.nodeType,
-      result: context.input,
-      config: context.config,
-    },
-    logs: [`Core node ${context.nodeId} executed`],
+  const nodeType = normalizeNodeType(
+    context.nodeType || context.type || "core",
+  );
+  const expression =
+    context.config?.expression ||
+    context.config?.condition ||
+    context.config?.value;
+  const evaluated = evaluateExpression(expression, context);
+
+  const baseOutput: Record<string, any> = {
+    nodeId: context.nodeId,
+    nodeType: context.nodeType,
+    input: context.input,
+    config: context.config,
+    result: evaluated,
   };
+
+  switch (nodeType) {
+    case "core-set":
+      return {
+        success: true,
+        output: {
+          ...baseOutput,
+          variables: buildSetVariables(context, evaluated),
+        },
+        logs: [`Core set node ${context.nodeId} executed`],
+      };
+
+    case "core-transform":
+      return {
+        success: true,
+        output: {
+          ...baseOutput,
+          transformed: evaluated,
+        },
+        logs: [`Core transform node ${context.nodeId} executed`],
+      };
+
+    case "core-if":
+      return {
+        success: true,
+        output: {
+          ...baseOutput,
+          condition: Boolean(evaluated),
+        },
+        logs: [
+          `Core if node ${context.nodeId} evaluated to ${Boolean(evaluated)}`,
+        ],
+      };
+
+    case "core-switch":
+      return {
+        success: true,
+        output: {
+          ...baseOutput,
+          selected: evaluated,
+        },
+        logs: [
+          `Core switch node ${context.nodeId} selected branch ${String(evaluated)}`,
+        ],
+      };
+
+    default:
+      return {
+        success: true,
+        output: baseOutput,
+        logs: [`Core node ${context.nodeId} executed`],
+      };
+  }
 };
 
 const fallbackHandler = async (context: any) => {
@@ -958,53 +1535,6 @@ const codePythonHandler = async (context: any) => {
   };
 };
 
-const logicIfHandler = async (context: any) => {
-  const condition = context.config?.condition || context.input?.condition;
-
-  if (!condition) {
-    return {
-      success: false,
-      error: "Condition not configured",
-      nodeId: context.nodeId,
-    };
-  }
-
-  return {
-    success: true,
-    output: {
-      nodeId: context.nodeId,
-      nodeType: "logic-if",
-      condition,
-      evaluated: false,
-      message: `Conditional logic prepared for evaluation`,
-    },
-    logs: [`Logic IF node: evaluating condition "${condition}"`],
-  };
-};
-
-const logicDelayHandler = async (context: any) => {
-  const duration = context.config?.duration || context.input?.duration;
-
-  if (!duration) {
-    return {
-      success: false,
-      error: "Duration not configured",
-      nodeId: context.nodeId,
-    };
-  }
-
-  return {
-    success: true,
-    output: {
-      nodeId: context.nodeId,
-      nodeType: "logic-delay",
-      duration,
-      message: `Delay node prepared`,
-    },
-    logs: [`Logic DELAY node: waiting for ${duration}ms`],
-  };
-};
-
 const logicLoopHandler = async (context: any) => {
   const iterations = context.config?.iterations || context.input?.iterations;
   const condition = context.config?.condition;
@@ -1153,8 +1683,13 @@ const builtInNodes = [
   // Core / utility nodes - with specialized handlers
   createNodeDefinition(
     "core-http-request",
-    coreHandler,
+    coreHttpRequestHandler,
     "HTTP request core node",
+  ),
+  createNodeDefinition(
+    "data-supabase",
+    dataSupabaseHandler,
+    "Supabase data node",
   ),
   createNodeDefinition(
     "core-code-js",
@@ -1196,3 +1731,102 @@ const builtInNodes = [
 for (const node of builtInNodes) {
   nodeRegistry.register(node);
 }
+
+// Web search aliases
+nodeRegistry.register({
+  type: "tool-serpapi-search",
+  handler: webSearchHandler,
+  description: "Web search node (SerpAPI/DuckDuckGo)",
+});
+
+nodeRegistry.register({
+  type: "tool-web-search",
+  handler: webSearchHandler,
+  description: "Web search node",
+});
+
+nodeRegistry.register({
+  type: "web-search",
+  handler: webSearchHandler,
+  description: "Web search node",
+});
+
+// Manual trigger
+nodeRegistry.register({
+  type: "trigger-manual",
+  handler: triggerHandler,
+  description: "Manual input trigger with structured fields",
+});
+
+// core-set variable setter - ENHANCED
+nodeRegistry.register({
+  type: "core-set",
+  handler: async (context: any) => {
+    const variables: Record<string, any> = {};
+    if (
+      context.config?.variables &&
+      typeof context.config.variables === "object" &&
+      !Array.isArray(context.config.variables)
+    ) {
+      Object.assign(variables, context.config.variables);
+    }
+
+    const safeExpressions: Record<string, () => any> = {
+      "new Date().toISOString().slice(0,10)": () =>
+        new Date().toISOString().slice(0, 10),
+      "new Date().toISOString()": () => new Date().toISOString(),
+      "Date.now()": () => Date.now(),
+      today: () => new Date().toISOString().slice(0, 10),
+    };
+
+    for (const [key, value] of Object.entries(context.config || {})) {
+      if (
+        ["isConfigured", "variables", "triggerName", "inputSchema"].includes(
+          key,
+        )
+      )
+        continue;
+
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (safeExpressions[trimmed]) {
+          variables[key] = safeExpressions[trimmed]();
+        } else if (trimmed.startsWith("{{") && trimmed.endsWith("}}")) {
+          variables[key] = "";
+        } else {
+          variables[key] = value;
+        }
+      } else {
+        variables[key] = value;
+      }
+    }
+
+    if (context.input?.market) {
+      variables.market = variables.market || context.input.market;
+    }
+    if (context.input?.topic) {
+      variables.topic = variables.topic || context.input.topic;
+    }
+    if (context.input?.timeScope) {
+      variables.timeScope = variables.timeScope || context.input.timeScope;
+    }
+
+    const text = Object.entries(variables)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join("\n");
+
+    return {
+      success: true,
+      output: {
+        text,
+        message: `Variables set: ${Object.keys(variables).join(", ")}`,
+        data: variables,
+        ...variables,
+      },
+      logs: [
+        `core-set: stored variables: ${JSON.stringify(variables).slice(0, 200)}`,
+      ],
+    };
+  },
+  description: "Set workflow variables",
+});

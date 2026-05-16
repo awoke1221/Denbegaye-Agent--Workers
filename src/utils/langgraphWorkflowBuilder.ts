@@ -71,28 +71,73 @@ function resolvePreviousOutput(
   }, {});
 }
 
+function getNestedValue(obj: any, path: string): any {
+  if (!obj || typeof obj !== "object") return undefined;
+  const parts = path.split(".");
+  let current: any = obj;
+  for (const part of parts) {
+    current = current?.[part];
+    if (current === undefined) return undefined;
+  }
+  return current;
+}
+
 function interpolateConfig(
   config: Record<string, any>,
   nodeResults: Record<string, any>,
+  variables: Record<string, any>,
+  state?: AgentStateType,
 ): Record<string, any> {
   if (!config) return {};
-  const result = { ...config };
 
-  for (const [key, value] of Object.entries(result)) {
+  const interpolateValue = (value: any): any => {
     if (typeof value === "string" && value.includes("{{")) {
-      result[key] = value.replace(/\{\{([^}]+)\}\}/g, (match, path) => {
-        const parts = path.trim().split(".");
+      return value.replace(/\{\{([^}]+)\}\}/g, (match, path) => {
+        const trimmed = path.trim();
+
+        if (trimmed === "variables") {
+          const resolved = state?.variables || variables || {};
+          return resolved !== undefined
+            ? String(JSON.stringify(resolved))
+            : match;
+        }
+
+        if (trimmed.startsWith("variables.")) {
+          const varKey = trimmed.replace("variables.", "");
+          const resolved = getNestedValue(
+            state?.variables || variables || {},
+            varKey,
+          );
+          return resolved !== undefined ? String(resolved) : match;
+        }
+
+        const parts = trimmed.split(".");
         let resolved: any = nodeResults;
         for (const part of parts) {
           resolved = resolved?.[part];
           if (resolved === undefined) return match;
         }
-        return String(resolved ?? match);
+        return resolved !== undefined ? String(resolved) : match;
       });
     }
-  }
 
-  return result;
+    if (Array.isArray(value)) {
+      return value.map(interpolateValue);
+    }
+
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, nestedValue]) => [
+          key,
+          interpolateValue(nestedValue),
+        ]),
+      );
+    }
+
+    return value;
+  };
+
+  return interpolateValue(config) as Record<string, any>;
 }
 
 /**
@@ -249,6 +294,8 @@ export class AdvancedWorkflowBuilder {
       const resolvedConfig = interpolateConfig(
         nodeConfig.config || {},
         currentNodeResults,
+        state.variables,
+        state,
       );
 
       const context = {
@@ -257,6 +304,7 @@ export class AdvancedWorkflowBuilder {
         config: resolvedConfig,
         input: previousOutput,
         previousOutputs: currentNodeResults,
+        variables: state.variables,
         apiKeys: this.config.apiKeys,
       };
 
@@ -290,6 +338,23 @@ export class AdvancedWorkflowBuilder {
         nodeId,
         result.data,
       );
+
+      // After core-set runs, merge its output into state.variables
+      if (nodeConfig.type === "core-set" && result.data?.output?.data) {
+        const newVars = result.data.output.data as Record<string, any>;
+        // Update state variables so downstream nodes can use them
+        updatedState = StateUtils.updateVariables(updatedState, newVars);
+      }
+
+      const nodeVariables =
+        result.data?.output?.variables || result.data?.variables;
+      if (
+        nodeVariables &&
+        typeof nodeVariables === "object" &&
+        !Array.isArray(nodeVariables)
+      ) {
+        updatedState = StateUtils.updateVariables(updatedState, nodeVariables);
+      }
 
       updatedState = {
         ...updatedState,

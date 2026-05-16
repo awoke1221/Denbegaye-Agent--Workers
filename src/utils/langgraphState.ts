@@ -22,16 +22,28 @@ export const AgentState = Annotation.Root({
   }),
 
   // Workflow context
-  workflowId: Annotation<string>,
-  executionId: Annotation<string>,
-  userId: Annotation<string>,
+  workflowId: Annotation<string>({
+    reducer: (a, b) => b ?? a,
+    default: () => "",
+  }),
+  executionId: Annotation<string>({
+    reducer: (a, b) => b ?? a,
+    default: () => "",
+  }),
+  userId: Annotation<string>({
+    reducer: (a, b) => b ?? a,
+    default: () => "",
+  }),
 
   // Variables and configuration
   variables: Annotation<Record<string, any>>({
     reducer: (x, y) => ({ ...x, ...y }),
   }),
 
-  apiKeys: Annotation<Record<string, any>>,
+  apiKeys: Annotation<Record<string, any>>({
+    reducer: (a, b) => ({ ...a, ...b }),
+    default: () => ({}),
+  }),
 
   // Memory systems
   shortTermMemory: Annotation<Record<string, any>>({
@@ -67,7 +79,10 @@ export const AgentState = Annotation.Root({
     reducer: (x, y) => [...x, ...y],
   }),
 
-  nodeDependencies: Annotation<Record<string, string[]>>,
+  nodeDependencies: Annotation<Record<string, string[]>>({
+    reducer: (a, b) => ({ ...a, ...b }),
+    default: () => ({}),
+  }),
 
   // Streaming and updates
   streamEvents: Annotation<
@@ -82,9 +97,17 @@ export const AgentState = Annotation.Root({
   }),
 
   // Status tracking
-  status: Annotation<"idle" | "running" | "completed" | "failed" | "cancelled">,
+  status: Annotation<"idle" | "running" | "completed" | "failed" | "cancelled">(
+    {
+      reducer: (a, b) => b ?? a,
+      default: () => "idle",
+    },
+  ),
 
-  currentNode: Annotation<string | null>,
+  currentNode: Annotation<string | null>({
+    reducer: (a, b) => b ?? a,
+    default: () => null,
+  }),
 
   // Logs and debugging
   logs: Annotation<
@@ -113,9 +136,15 @@ export const AgentState = Annotation.Root({
   }),
 
   // Timing information
-  startTime: Annotation<Date>,
+  startTime: Annotation<Date>({
+    reducer: (a, b) => b ?? a,
+    default: () => new Date(),
+  }),
 
-  endTime: Annotation<Date | null>,
+  endTime: Annotation<Date | null>({
+    reducer: (a, b) => b ?? a,
+    default: () => null,
+  }),
 
   nodeStartTimes: Annotation<Record<string, Date>>({
     reducer: (x, y) => ({ ...x, ...y }),
@@ -130,7 +159,10 @@ export const AgentState = Annotation.Root({
     reducer: (x, y) => ({ ...x, ...y }),
   }),
 
-  maxRetries: Annotation<number>,
+  maxRetries: Annotation<number>({
+    reducer: (a, b) => b ?? a,
+    default: () => 3,
+  }),
 
   // Tool calls and results
   toolCalls: Annotation<
@@ -389,6 +421,22 @@ export const StateUtils = {
       nodeResults: {
         ...state.nodeResults,
         [nodeId]: result,
+      },
+    };
+  },
+
+  /**
+   * Update workflow variables
+   */
+  updateVariables(
+    state: AgentStateType,
+    variables: Record<string, any>,
+  ): AgentStateType {
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        ...variables,
       },
     };
   },
