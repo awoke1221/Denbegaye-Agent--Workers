@@ -603,6 +603,214 @@ const aiHandler = async (context: any) => {
   }
 };
 
+const buildDenbegayeAgentPrompt = (context: any) => {
+  const systemPrompt =
+    context.config?.systemPrompt ||
+    "You are Denbegaye, an autonomous AI agent. Use the available tools and memory to complete the task. Be explicit when selecting tools and provide structured output when requested.";
+  const inputText =
+    context.config?.inputText ||
+    context.config?.prompt ||
+    context.input?.text ||
+    context.input?.output?.text ||
+    context.input?.message ||
+    "";
+  const variablesText = Object.entries(context.variables || {})
+    .filter(
+      ([, value]) => value !== undefined && value !== null && value !== "",
+    )
+    .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+    .join("\n");
+
+  const toolList = (() => {
+    const rawTools = context.config?.tools;
+    if (Array.isArray(rawTools)) {
+      return rawTools.map((tool: any) => String(tool).trim()).filter(Boolean);
+    }
+    if (typeof rawTools === "string") {
+      return rawTools
+        .split(/[\n,;]+/)
+        .map((tool) => tool.trim())
+        .filter(Boolean);
+    }
+    return [];
+  })();
+
+  const enableToolCalling =
+    String(
+      context.config?.["Enable Tool Calling"] ||
+        context.config?.enableToolCalling ||
+        "yes",
+    ).toLowerCase() === "yes";
+  const enableMemory =
+    String(
+      context.config?.["Enable Memory"] || context.config?.enableMemory || "no",
+    ).toLowerCase() === "yes";
+  const memoryType =
+    context.config?.["Memory Type"] || context.config?.memoryType || "semantic";
+  const reasoningType =
+    context.config?.["Reasoning Type"] ||
+    context.config?.reasoningType ||
+    "step-by-step";
+  const outputFormat =
+    context.config?.["Output Format"] || context.config?.outputFormat || "text";
+  const maxIterations = Number(
+    context.config?.["Max Iterations"] || context.config?.maxIterations || 5,
+  );
+
+  const memorySection = enableMemory
+    ? `Memory type: ${memoryType}
+Memory enabled: yes
+Memory snapshot: ${String(
+        context.variables?.memory ||
+          context.variables?.memoryContext ||
+          context.input?.memory ||
+          context.input?.memoryContext ||
+          "No memory context available",
+      )}
+`
+    : "Memory enabled: no\n";
+
+  const toolSection = enableToolCalling
+    ? `Available tools:\n${toolList.length ? toolList.map((tool, index) => `${index + 1}. ${tool}`).join("\n") : "No tools configured"}\nTool calling is enabled. When you decide to use a tool, describe the tool call clearly and include a tool payload if applicable.`
+    : "Tool calling disabled.\n";
+
+  const outputGuidance =
+    outputFormat.toLowerCase() === "json"
+      ? "Respond with valid JSON only."
+      : outputFormat.toLowerCase() === "structured"
+        ? "Respond with a structured plan and final answer in clearly separated sections."
+        : "Respond with a concise but complete answer.";
+
+  let prompt = `${systemPrompt}\n\n`;
+
+  if (toolSection) {
+    prompt += `${toolSection}\n\n`;
+  }
+
+  prompt += `Reasoning strategy: ${reasoningType}. Max iterations: ${maxIterations}.\n`;
+
+  if (variablesText) {
+    prompt += `Context variables:\n${variablesText}\n\n`;
+  }
+
+  prompt += `${memorySection}\n`;
+  prompt += `Task input:\n${inputText}\n\n`;
+  prompt += `${outputGuidance}\n`;
+
+  if (toolList.length > 0) {
+    prompt += `If a tool is useful, choose the best tool from the available list and explain why. Use the following tool format:\n`;
+    prompt += `TOOL_CALL: {\n  \"tool\": \"tool-name\",\n  \"action\": \"description of action\",\n  \"params\": { ... }\n}\n\n`;
+  }
+
+  prompt += `Begin by planning your next steps, and if tools are used, make the tool selection explicit.\n`;
+
+  return prompt;
+};
+
+const denbegayeAgentHandler = async (context: any) => {
+  const apiKey = context.config?.apiKey;
+  const provider = (
+    context.config?.provider ||
+    context.config?.["LLM Provider"] ||
+    "gemini"
+  )
+    .toString()
+    .toLowerCase();
+  const model = context.config?.model;
+  const nodeType = context.nodeType || context.type || "denbegaye-agent";
+
+  if (!apiKey) {
+    return {
+      success: false,
+      error: "API key not configured for Denbegaye Agent node",
+      nodeId: context.nodeId,
+    };
+  }
+
+  const effectiveProvider =
+    provider === "gemini" ||
+    provider === "openai" ||
+    provider === "anthropic" ||
+    provider === "deepseek" ||
+    provider === "groq"
+      ? provider
+      : getProviderFromNodeType(nodeType);
+
+  const memoryEnabled =
+    String(
+      context.config?.["Enable Memory"] || context.config?.enableMemory || "no",
+    ).toLowerCase() === "yes";
+  const memoryType =
+    context.config?.["Memory Type"] || context.config?.memoryType || "semantic";
+  const tools = Array.isArray(context.config?.tools)
+    ? context.config.tools
+    : typeof context.config?.tools === "string"
+      ? context.config.tools
+          .split(/[\n,;]+/)
+          .map((tool: string) => tool.trim())
+          .filter(Boolean)
+      : [];
+
+  const prompt = buildDenbegayeAgentPrompt(context);
+
+  try {
+    const llm = llmFactory.createLLM({
+      provider: effectiveProvider as any,
+      apiKey,
+      model,
+      temperature: context.config?.temperature ?? 0.7,
+      maxTokens: context.config?.maxTokens ?? 1500,
+    });
+
+    const response = await llm.invoke([new HumanMessage(prompt)]);
+    const generatedText = response.content as string;
+
+    return {
+      success: true,
+      output: {
+        text: generatedText,
+        message: `Denbegaye autonomous agent executed with provider ${effectiveProvider}`,
+        model,
+        provider: effectiveProvider,
+        toolCalls: tools,
+        memoryEnabled,
+        data: {
+          model,
+          provider: effectiveProvider,
+          systemPrompt: context.config?.systemPrompt || "",
+          reasoningType:
+            context.config?.["Reasoning Type"] ||
+            context.config?.reasoningType ||
+            "step-by-step",
+          outputFormat:
+            context.config?.["Output Format"] ||
+            context.config?.outputFormat ||
+            "text",
+          toolList: tools,
+          memoryType,
+          executionType: "denbegaye-autonomous-agent",
+        },
+        raw: {
+          prompt,
+          response: generatedText,
+          nodeId: context.nodeId,
+          nodeType,
+        },
+      },
+      logs: [
+        `${nodeType} executed with provider ${effectiveProvider} and model ${model || "default"}`,
+      ],
+    };
+  } catch (error) {
+    logger.error(`Denbegaye Agent handler error for ${nodeType}:`, error);
+    return {
+      success: false,
+      error: `Failed to execute Denbegaye Agent node: ${error instanceof Error ? error.message : String(error)}`,
+      nodeId: context.nodeId,
+    };
+  }
+};
+
 const triggerHandler = async (context: any) => {
   const rawInput =
     context.config?.inputSchema ||
@@ -1579,6 +1787,11 @@ const builtInNodes = [
     "ai-google-gemini",
     geminiHandler,
     "Google Gemini AI node alias for frontend",
+  ),
+  createNodeDefinition(
+    "denbegaye-agent",
+    denbegayeAgentHandler,
+    "Denbegaye autonomous agent node with tool and memory support",
   ),
   createNodeDefinition("ai-deepseek", deepseekHandler, "DeepSeek AI node"),
   createNodeDefinition("ai-reasoning", aiHandler, "Reasoning AI node"),

@@ -27,21 +27,36 @@ function resolvePreviousOutput(nodeId, nodeResults, edges) {
         return { ...acc, ...parentOutput };
     }, {});
 }
+function getNestedValue(obj, path) {
+    if (!obj || typeof obj !== "object")
+        return undefined;
+    const parts = path.split(".");
+    let current = obj;
+    for (const part of parts) {
+        current = current?.[part];
+        if (current === undefined)
+            return undefined;
+    }
+    return current;
+}
 function interpolateConfig(config, nodeResults, variables, state) {
     if (!config)
         return {};
-    const result = { ...config };
-    for (const [key, value] of Object.entries(result)) {
+    const interpolateValue = (value) => {
         if (typeof value === "string" && value.includes("{{")) {
-            result[key] = value.replace(/\{\{([^}]+)\}\}/g, (match, path) => {
+            return value.replace(/\{\{([^}]+)\}\}/g, (match, path) => {
                 const trimmed = path.trim();
-                // Handle {{variables.X}} — look in state.variables
+                if (trimmed === "variables") {
+                    const resolved = state?.variables || variables || {};
+                    return resolved !== undefined
+                        ? String(JSON.stringify(resolved))
+                        : match;
+                }
                 if (trimmed.startsWith("variables.")) {
                     const varKey = trimmed.replace("variables.", "");
-                    const resolved = (state?.variables || variables || {})[varKey];
+                    const resolved = getNestedValue(state?.variables || variables || {}, varKey);
                     return resolved !== undefined ? String(resolved) : match;
                 }
-                // Handle {{nodeId.output.field}} — existing logic
                 const parts = trimmed.split(".");
                 let resolved = nodeResults;
                 for (const part of parts) {
@@ -52,8 +67,18 @@ function interpolateConfig(config, nodeResults, variables, state) {
                 return resolved !== undefined ? String(resolved) : match;
             });
         }
-    }
-    return result;
+        if (Array.isArray(value)) {
+            return value.map(interpolateValue);
+        }
+        if (value && typeof value === "object") {
+            return Object.fromEntries(Object.entries(value).map(([key, nestedValue]) => [
+                key,
+                interpolateValue(nestedValue),
+            ]));
+        }
+        return value;
+    };
+    return interpolateValue(config);
 }
 /**
  * Advanced LangGraph Workflow Builder

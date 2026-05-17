@@ -172,7 +172,7 @@ const agentRunHandler = async (req, res) => {
         const waitingJobs = await agentQueue_1.agentQueue.getWaiting();
         const activeJobs = await agentQueue_1.agentQueue.getActive();
         const totalQueuedJobs = waitingJobs.length + activeJobs.length;
-        if (totalQueuedJobs > 1000) {
+        if (totalQueuedJobs > 100000) {
             return res.status(429).json({ error: "System busy, try later" });
         }
         // Check per-user running execution limit (max 100 concurrent running jobs)
@@ -185,7 +185,7 @@ const agentRunHandler = async (req, res) => {
             console.error("Error checking user jobs:", countError);
             return res.status(500).json({ error: "Internal server error" });
         }
-        if ((userRunningJobs || 0) >= 100) {
+        if ((userRunningJobs || 0) >= 10000) {
             return res.status(429).json({
                 error: "Too many concurrent running executions. Wait for current jobs to finish.",
             });
