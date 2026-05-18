@@ -33,7 +33,10 @@ const normalizeNodeType = (type: string) =>
     .replace(/[\s_]+/g, "-")
     .replace(/[^a-z0-9-]/g, "");
 
-const normalizeModelForProvider = (provider: string, model?: any): string | undefined => {
+const normalizeModelForProvider = (
+  provider: string,
+  model?: any,
+): string | undefined => {
   const value = model?.toString?.().trim?.();
   if (!provider) return value;
   const normalizedProvider = provider.toString().toLowerCase();
