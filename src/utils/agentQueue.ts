@@ -617,6 +617,7 @@ async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
       decryptedApiKeys,
       executionId,
       userId,
+      agentId,
       {
         onNodeStart: (nodeId) => {
           logger.debug("Node started", { executionId, nodeId });

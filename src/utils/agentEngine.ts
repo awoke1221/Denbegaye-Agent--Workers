@@ -12,6 +12,7 @@ import { supabase } from "./supabaseClient";
 interface WorkflowExecutionContext {
   executionId: string;
   userId: string;
+  agentId?: string;
   workflowId: string;
   startTime: Date;
   maxRetries: number;
@@ -546,6 +547,10 @@ export class AdvancedWorkflowExecutor {
         apiKeys,
         config: node.config || {},
         validation: nodeDefinition.validation,
+        agentId: this.context.agentId,
+        userId: this.context.userId,
+        executionId: this.context.executionId,
+        workflowId: this.context.workflowId,
       } as any);
 
       if (!result.success) {
@@ -868,6 +873,7 @@ export async function executeWorkflow(
   apiKeys: any,
   executionId: string,
   userId: string,
+  agentId?: string,
   options?: {
     onNodeStart?: (nodeId: string) => void;
     onNodeComplete?: (nodeId: string, success: boolean, error?: string) => void;
@@ -986,6 +992,7 @@ export async function executeWorkflow(
       const advancedExecutor = new AdvancedWorkflowExecutor({
         executionId,
         userId,
+        agentId,
         workflowId: workflowConfig.workflowId,
         startTime: new Date(startTime),
         maxRetries: 2,

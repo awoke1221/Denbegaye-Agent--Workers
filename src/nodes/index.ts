@@ -9,6 +9,13 @@ import { llmFactory } from "../utils/llmFactory";
 import { logger } from "../utils/logger";
 import { sendEmail, EmailOptions } from "../utils/emailService";
 import { supabase } from "../utils/supabaseClient";
+import { SupabaseMemorySystem } from "../utils/memorySystem";
+import { SupabaseToolRegistry } from "../utils/toolRegistry";
+import {
+  GoogleGenerativeAI,
+  SchemaType,
+  FunctionCallingMode,
+} from "@google/generative-ai";
 
 const getProviderFromNodeType = (nodeType: string): string => {
   const type = nodeType.toLowerCase();
@@ -35,6 +42,128 @@ const sanitizeExpression = (expression: any): string => {
   const text = String(expression).trim();
   const match = text.match(/^\{\{(.+)\}\}$/);
   return match ? match[1].trim() : text;
+};
+
+const buildMemoryScope = (context: any): string => {
+  return (
+    context.agentId ||
+    context.userId ||
+    context.executionId ||
+    "denbegaye"
+  ).toString();
+};
+
+const parseToolList = (rawTools: any): string[] => {
+  if (!rawTools) return [];
+  if (Array.isArray(rawTools)) {
+    return rawTools.map((tool) => String(tool).trim()).filter(Boolean);
+  }
+
+  if (typeof rawTools === "string") {
+    return rawTools
+      .split(/[,;\n]+/)
+      .map((tool) => tool.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+};
+
+const parseToolCall = (
+  output: string,
+): { tool: string; params: any } | null => {
+  if (!output) return null;
+
+  const toolCallRegex = /TOOL_CALL\s*:\s*(\{[\s\S]*?\})(?![\s\S]*\{)/i;
+  const jsonMatch = output.match(toolCallRegex);
+  let payload: any = null;
+
+  if (jsonMatch?.[1]) {
+    try {
+      payload = JSON.parse(jsonMatch[1]);
+    } catch {
+      // try to extract JSON-ish content manually
+      const fallback = jsonMatch[1]
+        .replace(/([a-z0-9A-Z_]+)\s*:/g, '"$1":')
+        .replace(/'/g, '"');
+      try {
+        payload = JSON.parse(fallback);
+      } catch {
+        payload = null;
+      }
+    }
+  }
+
+  if (!payload || !payload.tool) {
+    return null;
+  }
+
+  return {
+    tool: String(payload.tool).trim(),
+    params: payload.params || {},
+  };
+};
+
+const loadRelevantMemory = async (
+  context: any,
+  query: string,
+  limit = 5,
+): Promise<string> => {
+  try {
+    const memorySystem = new SupabaseMemorySystem();
+    const memoryScope = buildMemoryScope(context);
+    const memories = await memorySystem.retrieve(query, limit, memoryScope);
+    if (!memories || memories.length === 0) {
+      return "";
+    }
+    return memories.map((memory) => `- ${memory.content}`).join("\n");
+  } catch (error) {
+    logger.warn("Memory retrieval failed", {
+      error: error instanceof Error ? error.message : String(error),
+      context: {
+        agentId: context.agentId,
+        userId: context.userId,
+      },
+    });
+    return "";
+  }
+};
+
+const storeAgentMemory = async (
+  context: any,
+  content: string,
+  memoryType: string,
+): Promise<string | null> => {
+  try {
+    const memorySystem = new SupabaseMemorySystem();
+    const memoryScope = buildMemoryScope(context);
+    const memoryId = await memorySystem.store({
+      content,
+      embedding: [],
+      metadata: {
+        agentId: context.agentId,
+        userId: context.userId,
+        executionId: context.executionId,
+        type: memoryType || "semantic",
+      },
+      scope: memoryScope,
+    });
+    return memoryId;
+  } catch (error) {
+    logger.warn("Memory store failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+};
+
+const callTool = async (toolName: string, params: any) => {
+  const toolRegistry = new SupabaseToolRegistry();
+  const tool = await toolRegistry.getTool(toolName);
+  if (!tool) {
+    throw new Error(`Tool ${toolName} not found`);
+  }
+  return await toolRegistry.executeTool(tool, params || {});
 };
 
 const evaluateExpression = (expression: any, context: any): any => {
@@ -742,64 +871,251 @@ const denbegayeAgentHandler = async (context: any) => {
     ).toLowerCase() === "yes";
   const memoryType =
     context.config?.["Memory Type"] || context.config?.memoryType || "semantic";
-  const tools = Array.isArray(context.config?.tools)
-    ? context.config.tools
-    : typeof context.config?.tools === "string"
-      ? context.config.tools
-          .split(/[\n,;]+/)
-          .map((tool: string) => tool.trim())
-          .filter(Boolean)
-      : [];
+  const tools = parseToolList(context.config?.tools);
 
-  const prompt = buildDenbegayeAgentPrompt(context);
+  const memoryContext = memoryEnabled
+    ? await loadRelevantMemory(
+        context,
+        context.input?.text || context.config?.prompt || "",
+      )
+    : "";
+
+  const prompt = buildDenbegayeAgentPrompt({
+    ...context,
+    variables: {
+      ...context.variables,
+      memory: memoryContext,
+    },
+    input: {
+      ...context.input,
+      memory: memoryContext,
+    },
+  });
 
   try {
-    const llm = llmFactory.createLLM({
-      provider: effectiveProvider as any,
-      apiKey,
-      model,
-      temperature: context.config?.temperature ?? 0.7,
-      maxTokens: context.config?.maxTokens ?? 1500,
-    });
+    let lastOutput = "";
+    let iteration = 0;
+    let toolOutput: any = null;
+    let toolNameUsed: string | null = null;
 
-    const response = await llm.invoke([new HumanMessage(prompt)]);
-    const generatedText = response.content as string;
+    const isGeminiProvider = effectiveProvider === "gemini";
+    let geminiModel: any = null;
+    let functionDeclarations: any[] = [];
+    let history: any[] = [];
+
+    if (isGeminiProvider) {
+      const toolRegistry = new SupabaseToolRegistry();
+      const availableTools = await toolRegistry.listTools();
+      const allowedToolNames = availableTools.map((tool: any) =>
+        String(tool.name),
+      );
+
+      functionDeclarations = availableTools.map((tool: any) => ({
+        name: String(tool.name),
+        description: String(tool.description || ""),
+        parameters: tool.parameters
+          ? {
+              type: SchemaType.OBJECT,
+              properties: tool.parameters.properties || {},
+              required: tool.parameters.required || [],
+              description: tool.parameters.description,
+            }
+          : undefined,
+      }));
+
+      const genAI = new GoogleGenerativeAI(apiKey);
+      geminiModel = genAI.getGenerativeModel({
+        model: model || "gemini-pro",
+        generationConfig: {
+          temperature: context.config?.temperature ?? 0.7,
+          maxOutputTokens: context.config?.maxTokens ?? 1500,
+        },
+        systemInstruction: context.config?.systemPrompt || "",
+        tools: [{ functionDeclarations }],
+        toolConfig: {
+          functionCallingConfig: {
+            mode: FunctionCallingMode.AUTO,
+            allowedFunctionNames: allowedToolNames,
+          },
+        },
+      });
+
+      history = [{ role: "user", parts: [{ text: prompt }] }];
+    } else {
+      // Non-Gemini providers keep the existing LangChain flow
+      const llm = llmFactory.createLLM({
+        provider: effectiveProvider as any,
+        apiKey,
+        model,
+        temperature: context.config?.temperature ?? 0.7,
+        maxTokens: context.config?.maxTokens ?? 1500,
+      });
+
+      history = null as any;
+      geminiModel = llm;
+    }
+
+    while (iteration < 5) {
+      iteration += 1;
+
+      if (isGeminiProvider) {
+        const response = await geminiModel.generateContent({
+          contents: history,
+        });
+
+        const functionCalls = response.response.functionCalls?.() || [];
+        const functionCall = functionCalls[0];
+
+        if (
+          functionCall &&
+          functionCall.name &&
+          functionDeclarations.some((fn) => fn.name === functionCall.name)
+        ) {
+          toolNameUsed = functionCall.name;
+          toolOutput = await callTool(
+            functionCall.name,
+            functionCall.args || {},
+          );
+          lastOutput = `Tool ${functionCall.name} returned:\n${JSON.stringify(toolOutput, null, 2)}`;
+          history.push({
+            role: "tool",
+            parts: [
+              {
+                functionResponse: {
+                  name: functionCall.name,
+                  response: toolOutput || {},
+                },
+              },
+            ],
+          });
+          continue;
+        }
+
+        const generatedText = response.response.text();
+        if (memoryEnabled && generatedText) {
+          await storeAgentMemory(context, generatedText, memoryType);
+        }
+
+        return {
+          success: true,
+          output: {
+            text: generatedText,
+            message: `Denbegaye autonomous agent executed with provider ${effectiveProvider}`,
+            model,
+            provider: effectiveProvider,
+            toolCalls: tools,
+            memoryEnabled,
+            data: {
+              model,
+              provider: effectiveProvider,
+              systemPrompt: context.config?.systemPrompt || "",
+              reasoningType:
+                context.config?.["Reasoning Type"] ||
+                context.config?.reasoningType ||
+                "step-by-step",
+              outputFormat:
+                context.config?.["Output Format"] ||
+                context.config?.outputFormat ||
+                "text",
+              toolList: tools,
+              memoryType,
+              memoryContext,
+              toolNameUsed,
+              toolOutput,
+              executionType: "denbegaye-autonomous-agent",
+            },
+            raw: {
+              prompt,
+              response: generatedText,
+              nodeId: context.nodeId,
+              nodeType,
+            },
+          },
+          logs: [
+            `${nodeType} executed with provider ${effectiveProvider} and model ${model || "default"}`,
+            `Iteration: ${iteration}`,
+            toolNameUsed ? `Tool used: ${toolNameUsed}` : "No tool used",
+          ].filter(Boolean),
+        };
+      }
+
+      const response = await geminiModel.invoke([
+        new HumanMessage(
+          prompt +
+            (lastOutput ? `\n\nPrevious tool output:\n${lastOutput}` : ""),
+        ),
+      ]);
+      const generatedText = response.content as string;
+      const toolCall = parseToolCall(generatedText);
+
+      if (toolCall && tools.includes(toolCall.tool)) {
+        toolNameUsed = toolCall.tool;
+        toolOutput = await callTool(toolCall.tool, toolCall.params);
+        lastOutput = `Tool ${toolCall.tool} returned:\n${JSON.stringify(toolOutput, null, 2)}`;
+        continue;
+      }
+
+      if (memoryEnabled && generatedText) {
+        await storeAgentMemory(context, generatedText, memoryType);
+      }
+
+      return {
+        success: true,
+        output: {
+          text: generatedText,
+          message: `Denbegaye autonomous agent executed with provider ${effectiveProvider}`,
+          model,
+          provider: effectiveProvider,
+          toolCalls: tools,
+          memoryEnabled,
+          data: {
+            model,
+            provider: effectiveProvider,
+            systemPrompt: context.config?.systemPrompt || "",
+            reasoningType:
+              context.config?.["Reasoning Type"] ||
+              context.config?.reasoningType ||
+              "step-by-step",
+            outputFormat:
+              context.config?.["Output Format"] ||
+              context.config?.outputFormat ||
+              "text",
+            toolList: tools,
+            memoryType,
+            memoryContext,
+            toolNameUsed,
+            toolOutput,
+            executionType: "denbegaye-autonomous-agent",
+          },
+          raw: {
+            prompt,
+            response: generatedText,
+            nodeId: context.nodeId,
+            nodeType,
+          },
+        },
+        logs: [
+          `${nodeType} executed with provider ${effectiveProvider} and model ${model || "default"}`,
+          `Iteration: ${iteration}`,
+          toolNameUsed ? `Tool used: ${toolNameUsed}` : "No tool used",
+        ].filter(Boolean),
+      };
+    }
 
     return {
       success: true,
       output: {
-        text: generatedText,
-        message: `Denbegaye autonomous agent executed with provider ${effectiveProvider}`,
-        model,
-        provider: effectiveProvider,
-        toolCalls: tools,
-        memoryEnabled,
+        text: lastOutput || "No meaningful output generated.",
+        message: "Denbegaye autonomous agent completed after max iterations",
         data: {
-          model,
-          provider: effectiveProvider,
-          systemPrompt: context.config?.systemPrompt || "",
-          reasoningType:
-            context.config?.["Reasoning Type"] ||
-            context.config?.reasoningType ||
-            "step-by-step",
-          outputFormat:
-            context.config?.["Output Format"] ||
-            context.config?.outputFormat ||
-            "text",
-          toolList: tools,
+          iteration,
+          toolNameUsed,
+          toolOutput,
+          memoryEnabled,
           memoryType,
-          executionType: "denbegaye-autonomous-agent",
-        },
-        raw: {
-          prompt,
-          response: generatedText,
-          nodeId: context.nodeId,
-          nodeType,
         },
       },
-      logs: [
-        `${nodeType} executed with provider ${effectiveProvider} and model ${model || "default"}`,
-      ],
+      logs: [`${nodeType} completed after reaching max iterations`],
     };
   } catch (error) {
     logger.error(`Denbegaye Agent handler error for ${nodeType}:`, error);
