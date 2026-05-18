@@ -9,8 +9,6 @@ import { llmFactory } from "../utils/llmFactory";
 import { logger } from "../utils/logger";
 import { sendEmail, EmailOptions } from "../utils/emailService";
 import { supabase } from "../utils/supabaseClient";
-import { SupabaseMemorySystem } from "../utils/memorySystem";
-import { SupabaseToolRegistry } from "../utils/toolRegistry";
 import {
   GoogleGenerativeAI,
   SchemaType,
@@ -34,6 +32,20 @@ const normalizeNodeType = (type: string) =>
     .toLowerCase()
     .replace(/[\s_]+/g, "-")
     .replace(/[^a-z0-9-]/g, "");
+
+const normalizeModelForProvider = (provider: string, model?: any): string | undefined => {
+  const value = model?.toString?.().trim?.();
+  if (!provider) return value;
+  const normalizedProvider = provider.toString().toLowerCase();
+
+  if (normalizedProvider === "gemini") {
+    if (!value) return "gemini-2.5-flash";
+    if (value === "gemini-2.0-flash") return "gemini-2.5-flash";
+    return value;
+  }
+
+  return value || undefined;
+};
 
 const sanitizeExpression = (expression: any): string => {
   if (expression === undefined || expression === null) {
@@ -104,66 +116,59 @@ const parseToolCall = (
   };
 };
 
-const loadRelevantMemory = async (
-  context: any,
-  query: string,
-  limit = 5,
-): Promise<string> => {
-  try {
-    const memorySystem = new SupabaseMemorySystem();
-    const memoryScope = buildMemoryScope(context);
-    const memories = await memorySystem.retrieve(query, limit, memoryScope);
-    if (!memories || memories.length === 0) {
-      return "";
-    }
-    return memories.map((memory) => `- ${memory.content}`).join("\n");
-  } catch (error) {
-    logger.warn("Memory retrieval failed", {
-      error: error instanceof Error ? error.message : String(error),
-      context: {
-        agentId: context.agentId,
-        userId: context.userId,
-      },
-    });
-    return "";
+const callTool = async (
+  toolName: string,
+  params: any,
+  context?: any,
+): Promise<any> => {
+  if (!context?.nodes || !context?.edges) {
+    throw new Error(
+      `Cannot execute tool ${toolName}: workflow nodes and edges are not available in context`,
+    );
   }
-};
 
-const storeAgentMemory = async (
-  context: any,
-  content: string,
-  memoryType: string,
-): Promise<string | null> => {
-  try {
-    const memorySystem = new SupabaseMemorySystem();
-    const memoryScope = buildMemoryScope(context);
-    const memoryId = await memorySystem.store({
-      content,
-      embedding: [],
-      metadata: {
-        agentId: context.agentId,
-        userId: context.userId,
-        executionId: context.executionId,
-        type: memoryType || "semantic",
-      },
-      scope: memoryScope,
-    });
-    return memoryId;
-  } catch (error) {
-    logger.warn("Memory store failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
-};
+  const connectedTools = extractToolsFromConnectedNodes(context);
+  const tool = connectedTools.find((t) => t.name === toolName);
 
-const callTool = async (toolName: string, params: any) => {
-  const toolRegistry = new SupabaseToolRegistry();
-  const tool = await toolRegistry.getTool(toolName);
   if (!tool) {
-    throw new Error(`Tool ${toolName} not found`);
+    throw new Error(
+      `Tool ${toolName} not found among connected workflow nodes`,
+    );
   }
-  return await toolRegistry.executeTool(tool, params || {});
+
+  const nodeDefinition = nodeRegistry.get(tool.type);
+  if (!nodeDefinition || typeof nodeDefinition.handler !== "function") {
+    throw new Error(
+      `Connected node ${tool.nodeId} (${tool.type}) does not have a valid handler`,
+    );
+  }
+
+  const executionContext = {
+    nodeId: tool.nodeId,
+    nodeType: tool.type,
+    config: tool.config || {},
+    input: params || {},
+    previousOutputs: context.previousOutputs || {},
+    variables: context.variables || {},
+    apiKeys: context.apiKeys || {},
+    edges: context.edges,
+    nodes: context.nodes,
+    workflowId: context.workflowId,
+    executionId: context.executionId,
+  };
+
+  const result = await nodeDefinition.handler(executionContext);
+
+  if (!result || result.success === false) {
+    throw new Error(
+      `Connected node ${tool.nodeId} (${tool.type}) failed during execution: ${
+        result?.error || "unknown error"
+      }`,
+    );
+  }
+
+  // Return the node's actual output object back to Gemini as the tool response.
+  return result.output ?? result;
 };
 
 const evaluateExpression = (expression: any, context: any): any => {
@@ -751,6 +756,12 @@ const buildDenbegayeAgentPrompt = (context: any) => {
     .join("\n");
 
   const toolList = (() => {
+    if (context.edges && context.nodes) {
+      return extractToolsFromConnectedNodes(context).map(
+        (tool: any) => tool.name,
+      );
+    }
+
     const rawTools = context.config?.tools;
     if (Array.isArray(rawTools)) {
       return rawTools.map((tool: any) => String(tool).trim()).filter(Boolean);
@@ -836,6 +847,125 @@ Memory snapshot: ${String(
   return prompt;
 };
 
+/**
+ * Extract tools from nodes connected to the agent node
+ * Tools come from directly connected nodes in the workflow graph
+ * instead of querying a Supabase database
+ */
+const extractToolsFromConnectedNodes = (
+  context: any,
+): Array<{
+  nodeId: string;
+  name: string;
+  description: string;
+  config: any;
+}> => {
+  const { nodeId, edges = [], nodes = [] } = context;
+  if (!edges || !nodes) return [];
+
+  // Find all edges pointing TO this agent node (incoming connections)
+  const incomingEdges = edges.filter((e: any) => e.target === nodeId);
+
+  // Get the connected nodes that can serve as tools
+  const connectedTools = incomingEdges
+    .map((edge: any) => {
+      const node = nodes.find((n: any) => n.id === edge.source);
+      if (!node) return null;
+
+      // Create a tool entry for each connected node
+      return {
+        nodeId: node.id,
+        name: node.id.replace(/[^a-zA-Z0-9_]/g, "_"), // Sanitize for function name
+        description: node.config?.description || `Execute ${node.type} node`,
+        config: node.config || {},
+        type: node.type,
+      };
+    })
+    .filter(Boolean);
+
+  return connectedTools;
+};
+
+/**
+ * Build Gemini function declarations from connected node tools
+ * This replaces the Supabase tool registry query pattern
+ */
+const buildFunctionDeclarationsFromNodes = (
+  connectedTools: Array<{
+    nodeId: string;
+    name: string;
+    description: string;
+    config: any;
+  }>,
+): Array<any> => {
+  return connectedTools.map((tool) => {
+    // Build parameters from node config if available
+    const nodeConfig = tool.config || {};
+    const parameters = nodeConfig.parameters || {
+      type: "object",
+      properties: {},
+      required: [],
+    };
+
+    return {
+      name: tool.name,
+      description: tool.description,
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: parameters.properties || {},
+        required: parameters.required || [],
+        description: parameters.description || `Parameters for ${tool.name}`,
+      },
+    };
+  });
+};
+
+/**
+ * Initialize a simple conversation history array
+ * This replaces the Supabase memory system with in-loop conversation tracking
+ * Follows the n8n and Make.com pattern of accumulating execution context
+ */
+const initializeConversationHistory = (prompt: string): Array<any> => {
+  return [
+    {
+      role: "user",
+      parts: [{ text: prompt }],
+    },
+  ];
+};
+
+/**
+ * Add a message to the conversation history
+ * Accumulates the agent's understanding of what happened
+ */
+const addToConversationHistory = (
+  history: Array<any>,
+  role: string,
+  content: any,
+): Array<any> => {
+  const newEntry =
+    role === "tool"
+      ? {
+          role: "tool",
+          parts: [
+            {
+              functionResponse: {
+                name: content.name,
+                response: content.response || {},
+              },
+            },
+          ],
+        }
+      : {
+          role,
+          parts: [
+            { text: typeof content === "string" ? content : String(content) },
+          ],
+        };
+
+  return [...history, newEntry];
+};
+
 const denbegayeAgentHandler = async (context: any) => {
   const apiKey = context.config?.apiKey;
   const provider = (
@@ -845,7 +975,10 @@ const denbegayeAgentHandler = async (context: any) => {
   )
     .toString()
     .toLowerCase();
-  const model = context.config?.model;
+  const rawModel =
+    context.config?.model ||
+    context.config?.["Model"] ||
+    context.config?.["LLM Model"];
   const nodeType = context.nodeType || context.type || "denbegaye-agent";
 
   if (!apiKey) {
@@ -865,31 +998,13 @@ const denbegayeAgentHandler = async (context: any) => {
       ? provider
       : getProviderFromNodeType(nodeType);
 
-  const memoryEnabled =
-    String(
-      context.config?.["Enable Memory"] || context.config?.enableMemory || "no",
-    ).toLowerCase() === "yes";
-  const memoryType =
-    context.config?.["Memory Type"] || context.config?.memoryType || "semantic";
-  const tools = parseToolList(context.config?.tools);
+  const model = normalizeModelForProvider(effectiveProvider, rawModel);
 
-  const memoryContext = memoryEnabled
-    ? await loadRelevantMemory(
-        context,
-        context.input?.text || context.config?.prompt || "",
-      )
-    : "";
-
+  // Build prompt without memory context (memory now tracked in conversation history)
   const prompt = buildDenbegayeAgentPrompt({
     ...context,
-    variables: {
-      ...context.variables,
-      memory: memoryContext,
-    },
-    input: {
-      ...context.input,
-      memory: memoryContext,
-    },
+    variables: context.variables,
+    input: context.input,
   });
 
   try {
@@ -901,27 +1016,14 @@ const denbegayeAgentHandler = async (context: any) => {
     const isGeminiProvider = effectiveProvider === "gemini";
     let geminiModel: any = null;
     let functionDeclarations: any[] = [];
-    let history: any[] = [];
+    let conversationHistory: any[] = [];
+    let allowedToolNames: string[] = [];
 
     if (isGeminiProvider) {
-      const toolRegistry = new SupabaseToolRegistry();
-      const availableTools = await toolRegistry.listTools();
-      const allowedToolNames = availableTools.map((tool: any) =>
-        String(tool.name),
-      );
-
-      functionDeclarations = availableTools.map((tool: any) => ({
-        name: String(tool.name),
-        description: String(tool.description || ""),
-        parameters: tool.parameters
-          ? {
-              type: SchemaType.OBJECT,
-              properties: tool.parameters.properties || {},
-              required: tool.parameters.required || [],
-              description: tool.parameters.description,
-            }
-          : undefined,
-      }));
+      // Get tools from connected nodes instead of Supabase query
+      const connectedTools = extractToolsFromConnectedNodes(context);
+      functionDeclarations = buildFunctionDeclarationsFromNodes(connectedTools);
+      allowedToolNames = connectedTools.map((tool) => tool.name);
 
       const genAI = new GoogleGenerativeAI(apiKey);
       geminiModel = genAI.getGenerativeModel({
@@ -931,16 +1033,23 @@ const denbegayeAgentHandler = async (context: any) => {
           maxOutputTokens: context.config?.maxTokens ?? 1500,
         },
         systemInstruction: context.config?.systemPrompt || "",
-        tools: [{ functionDeclarations }],
-        toolConfig: {
-          functionCallingConfig: {
-            mode: FunctionCallingMode.AUTO,
-            allowedFunctionNames: allowedToolNames,
-          },
-        },
+        tools:
+          functionDeclarations.length > 0
+            ? [{ functionDeclarations }]
+            : undefined,
+        toolConfig:
+          functionDeclarations.length > 0
+            ? {
+                functionCallingConfig: {
+                  mode: FunctionCallingMode.AUTO,
+                  allowedFunctionNames: allowedToolNames,
+                },
+              }
+            : undefined,
       });
 
-      history = [{ role: "user", parts: [{ text: prompt }] }];
+      // Initialize conversation history with the initial prompt
+      conversationHistory = initializeConversationHistory(prompt);
     } else {
       // Non-Gemini providers keep the existing LangChain flow
       const llm = llmFactory.createLLM({
@@ -951,7 +1060,7 @@ const denbegayeAgentHandler = async (context: any) => {
         maxTokens: context.config?.maxTokens ?? 1500,
       });
 
-      history = null as any;
+      conversationHistory = null as any;
       geminiModel = llm;
     }
 
@@ -959,8 +1068,9 @@ const denbegayeAgentHandler = async (context: any) => {
       iteration += 1;
 
       if (isGeminiProvider) {
+        // Pass conversation history to Gemini so it has full context
         const response = await geminiModel.generateContent({
-          contents: history,
+          contents: conversationHistory,
         });
 
         const functionCalls = response.response.functionCalls?.() || [];
@@ -972,30 +1082,50 @@ const denbegayeAgentHandler = async (context: any) => {
           functionDeclarations.some((fn) => fn.name === functionCall.name)
         ) {
           toolNameUsed = functionCall.name;
+
+          // Record the function call in the in-memory conversation history
+          conversationHistory = [
+            ...conversationHistory,
+            {
+              role: "assistant",
+              parts: [
+                {
+                  functionCall: {
+                    name: functionCall.name,
+                    arguments: functionCall.args || {},
+                  },
+                },
+              ],
+            },
+          ];
+
           toolOutput = await callTool(
             functionCall.name,
             functionCall.args || {},
+            context,
           );
           lastOutput = `Tool ${functionCall.name} returned:\n${JSON.stringify(toolOutput, null, 2)}`;
-          history.push({
-            role: "tool",
-            parts: [
-              {
-                functionResponse: {
-                  name: functionCall.name,
-                  response: toolOutput || {},
-                },
-              },
-            ],
-          });
+
+          // Add tool result to conversation history (not to database)
+          conversationHistory = addToConversationHistory(
+            conversationHistory,
+            "tool",
+            {
+              name: functionCall.name,
+              response: toolOutput || {},
+            },
+          );
           continue;
         }
 
         const generatedText = response.response.text();
-        if (memoryEnabled && generatedText) {
-          await storeAgentMemory(context, generatedText, memoryType);
-        }
+        conversationHistory = addToConversationHistory(
+          conversationHistory,
+          "assistant",
+          generatedText,
+        );
 
+        // Conversation history is automatically maintained in memory (no database call)
         return {
           success: true,
           output: {
@@ -1003,8 +1133,6 @@ const denbegayeAgentHandler = async (context: any) => {
             message: `Denbegaye autonomous agent executed with provider ${effectiveProvider}`,
             model,
             provider: effectiveProvider,
-            toolCalls: tools,
-            memoryEnabled,
             data: {
               model,
               provider: effectiveProvider,
@@ -1017,9 +1145,8 @@ const denbegayeAgentHandler = async (context: any) => {
                 context.config?.["Output Format"] ||
                 context.config?.outputFormat ||
                 "text",
-              toolList: tools,
-              memoryType,
-              memoryContext,
+              toolsAvailable: allowedToolNames,
+              conversationTurns: iteration,
               toolNameUsed,
               toolOutput,
               executionType: "denbegaye-autonomous-agent",
@@ -1034,11 +1161,13 @@ const denbegayeAgentHandler = async (context: any) => {
           logs: [
             `${nodeType} executed with provider ${effectiveProvider} and model ${model || "default"}`,
             `Iteration: ${iteration}`,
+            `Tools available: ${allowedToolNames.length}`,
             toolNameUsed ? `Tool used: ${toolNameUsed}` : "No tool used",
           ].filter(Boolean),
         };
       }
 
+      // Non-Gemini provider path (LangChain)
       const response = await geminiModel.invoke([
         new HumanMessage(
           prompt +
@@ -1048,15 +1177,15 @@ const denbegayeAgentHandler = async (context: any) => {
       const generatedText = response.content as string;
       const toolCall = parseToolCall(generatedText);
 
-      if (toolCall && tools.includes(toolCall.tool)) {
+      // Check if tool is available from connected nodes
+      const connectedTools = extractToolsFromConnectedNodes(context);
+      const availableToolNames = connectedTools.map((t) => t.name);
+
+      if (toolCall && availableToolNames.includes(toolCall.tool)) {
         toolNameUsed = toolCall.tool;
-        toolOutput = await callTool(toolCall.tool, toolCall.params);
+        toolOutput = await callTool(toolCall.tool, toolCall.params, context);
         lastOutput = `Tool ${toolCall.tool} returned:\n${JSON.stringify(toolOutput, null, 2)}`;
         continue;
-      }
-
-      if (memoryEnabled && generatedText) {
-        await storeAgentMemory(context, generatedText, memoryType);
       }
 
       return {
@@ -1066,8 +1195,6 @@ const denbegayeAgentHandler = async (context: any) => {
           message: `Denbegaye autonomous agent executed with provider ${effectiveProvider}`,
           model,
           provider: effectiveProvider,
-          toolCalls: tools,
-          memoryEnabled,
           data: {
             model,
             provider: effectiveProvider,
@@ -1080,9 +1207,8 @@ const denbegayeAgentHandler = async (context: any) => {
               context.config?.["Output Format"] ||
               context.config?.outputFormat ||
               "text",
-            toolList: tools,
-            memoryType,
-            memoryContext,
+            toolsAvailable: availableToolNames,
+            conversationTurns: iteration,
             toolNameUsed,
             toolOutput,
             executionType: "denbegaye-autonomous-agent",
@@ -1097,6 +1223,7 @@ const denbegayeAgentHandler = async (context: any) => {
         logs: [
           `${nodeType} executed with provider ${effectiveProvider} and model ${model || "default"}`,
           `Iteration: ${iteration}`,
+          `Tools available: ${availableToolNames.length}`,
           toolNameUsed ? `Tool used: ${toolNameUsed}` : "No tool used",
         ].filter(Boolean),
       };
@@ -1109,19 +1236,23 @@ const denbegayeAgentHandler = async (context: any) => {
         message: "Denbegaye autonomous agent completed after max iterations",
         data: {
           iteration,
+          conversationTurns: iteration,
           toolNameUsed,
           toolOutput,
-          memoryEnabled,
-          memoryType,
+          executionType: "denbegaye-autonomous-agent",
         },
       },
-      logs: [`${nodeType} completed after reaching max iterations`],
+      logs: [
+        `${nodeType} completed after reaching max iterations (${iteration})`,
+      ],
     };
   } catch (error) {
     logger.error(`Denbegaye Agent handler error for ${nodeType}:`, error);
     return {
       success: false,
-      error: `Failed to execute Denbegaye Agent node: ${error instanceof Error ? error.message : String(error)}`,
+      error: `Failed to execute Denbegaye Agent node: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
       nodeId: context.nodeId,
     };
   }
