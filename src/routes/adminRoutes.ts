@@ -19,7 +19,7 @@ const parseIntOrDefault = (value: string | undefined, fallback: number) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
-const adminOnly = async (
+export const adminOnly = async (
   req: AdminRequest,
   res: Response,
   next: NextFunction,
