@@ -5,7 +5,6 @@ export interface VectorMemory {
   embedding: number[];
   metadata: Record<string, any>;
   timestamp: Date;
-  scope: string;
   similarity?: number;
 }
 
@@ -13,18 +12,11 @@ export interface MemorySystem {
   store(
     content: string,
     metadata: Record<string, any>,
-    scope: string,
+    memoryType?: string,
   ): Promise<string>;
-  retrieve(
-    query: string,
-    scope: string,
-    limitCount?: number,
-  ): Promise<VectorMemory[]>;
+  retrieve(query: string, limitCount?: number): Promise<VectorMemory[]>;
   getMemoryById(memoryId: string): Promise<VectorMemory | null>;
-  getMemoriesByScope(
-    scope: string,
-    limitCount?: number,
-  ): Promise<VectorMemory[]>;
+  getMemoriesByScope(limitCount?: number): Promise<VectorMemory[]>;
   updateMemory(
     memoryId: string,
     content: string,
@@ -33,31 +25,70 @@ export interface MemorySystem {
   deleteMemory(memoryId: string): Promise<void>;
   searchSimilar(
     query: string | number[],
-    scope: string,
-    threshold?: number,
-    limitCount?: number,
-  ): Promise<VectorMemory[]>;
+    openaiApiKey: string,
+    limit?: number,
+  ): Promise<
+    {
+      id: string;
+      agent_id: string;
+      user_id: string;
+      content: string;
+      metadata: Record<string, any>;
+      memory_type: string;
+      importance_score: number;
+      similarity: number;
+    }[]
+  >;
 }
 
+import OpenAI from "openai";
 import { supabase } from "./supabaseClient";
 
-// Simple embedding function - in production, use an external embedding model (OpenAI/VertexAI)
-async function generateEmbedding(text: string): Promise<number[]> {
-  const words = text.toLowerCase().split(/\s+/);
-  const embedding = new Array(384).fill(0);
+async function generateEmbedding(
+  text: string,
+  openaiApiKey?: string,
+): Promise<number[]> {
+  const truncatedText = text?.toString?.().slice(0, 8000) ?? "";
 
-  words.forEach((word, index) => {
-    const hash = word
-      .split("")
-      .reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    embedding[index % embedding.length] =
-      (embedding[index % embedding.length] + hash) % 1000;
-  });
+  if (!openaiApiKey) {
+    // Fall back to a lightweight deterministic embedding for legacy internal use
+    const words = truncatedText.toLowerCase().split(/\s+/);
+    const embedding = new Array(384).fill(0);
 
-  const magnitude = Math.sqrt(
-    embedding.reduce((sum, val) => sum + val * val, 0),
-  );
-  return embedding.map((val) => val / (magnitude || 1));
+    words.forEach((word, index) => {
+      const hash = word
+        .split("")
+        .reduce((acc, char) => acc + char.charCodeAt(0), 0);
+      embedding[index % embedding.length] =
+        (embedding[index % embedding.length] + hash) % 1000;
+    });
+
+    const magnitude = Math.sqrt(
+      embedding.reduce((sum, val) => sum + val * val, 0),
+    );
+    return embedding.map((val) => val / (magnitude || 1));
+  }
+
+  try {
+    const client = new OpenAI({ apiKey: openaiApiKey });
+    const response = await client.embeddings.create({
+      model: "text-embedding-3-small",
+      input: truncatedText,
+    });
+
+    const embedding = response?.data?.[0]?.embedding;
+    if (!Array.isArray(embedding)) {
+      throw new Error(
+        "OpenAI embedding response did not contain a valid embedding vector.",
+      );
+    }
+
+    return embedding as number[];
+  } catch (error: any) {
+    throw new Error(
+      `Failed to generate embedding: ${error?.message || String(error)}`,
+    );
+  }
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -67,24 +98,37 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (magnitudeA * magnitudeB || 1);
 }
 
-import { MemorySystem as ExecutionEngineMemorySystem } from "./executionEngine";
-
-export class SupabaseMemorySystem implements ExecutionEngineMemorySystem {
+export class SupabaseMemorySystem {
   private tableName = "memories";
 
-  async store(memory: Omit<VectorMemory, "id" | "timestamp">): Promise<string> {
+  async store(
+    memory: Omit<VectorMemory, "id" | "timestamp">,
+    openaiApiKey?: string,
+    memoryType: string = "general",
+  ): Promise<string> {
     const memoryId = `mem_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    let embedding: number[] | undefined;
 
-    const { error } = await supabase.from(this.tableName).insert([
-      {
-        id: memoryId,
-        content: memory.content,
-        embedding: memory.embedding,
-        metadata: { ...memory.metadata, scope: memory.scope },
-        timestamp: new Date().toISOString(),
-        created_at: new Date().toISOString(),
-      },
-    ]);
+    if (openaiApiKey) {
+      embedding = await generateEmbedding(memory.content, openaiApiKey);
+    }
+
+    const insertPayload: Record<string, any> = {
+      id: memoryId,
+      content: memory.content,
+      metadata: memory.metadata,
+      memory_type: memoryType,
+      timestamp: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+    };
+
+    if (embedding) {
+      insertPayload.embedding = embedding;
+    }
+
+    const { error } = await supabase
+      .from(this.tableName)
+      .insert([insertPayload]);
 
     if (error) {
       throw new Error(`Supabase memory store failed: ${error.message}`);
@@ -93,17 +137,12 @@ export class SupabaseMemorySystem implements ExecutionEngineMemorySystem {
     return memoryId;
   }
 
-  async retrieve(
-    query: string,
-    limit?: number,
-    scope?: string,
-  ): Promise<VectorMemory[]> {
+  async retrieve(query: string, limit?: number): Promise<VectorMemory[]> {
     const queryEmbedding = await generateEmbedding(query);
 
     const { data, error } = await supabase
       .from(this.tableName)
       .select("*")
-      .contains("metadata", { scope })
       .order("timestamp", { ascending: false })
       .limit(100);
 
@@ -119,7 +158,6 @@ export class SupabaseMemorySystem implements ExecutionEngineMemorySystem {
         embedding: item.embedding,
         metadata: item.metadata,
         timestamp: new Date(item.timestamp),
-        scope: item.metadata?.scope || "default",
         similarity: 0,
       }),
     );
@@ -178,43 +216,50 @@ export class SupabaseMemorySystem implements ExecutionEngineMemorySystem {
   }
 
   async searchSimilar(
-    embedding: number[],
+    query: string,
+    openaiApiKey: string,
     limit?: number,
-    scope?: string,
-  ): Promise<VectorMemory[]> {
-    let query = supabase.from(this.tableName).select("*");
+  ): Promise<
+    {
+      id: string;
+      agent_id: string;
+      user_id: string;
+      content: string;
+      metadata: Record<string, any>;
+      memory_type: string;
+      importance_score: number;
+      similarity: number;
+    }[]
+  > {
+    try {
+      const queryEmbedding = await generateEmbedding(query, openaiApiKey);
+      const matchCount = limit ?? 10;
 
-    if (scope) {
-      query = query.contains("metadata", { scope });
+      const { data, error } = await supabase.rpc("match_memories", {
+        query_embedding: queryEmbedding,
+        match_threshold: 0.75,
+        match_count: matchCount,
+      });
+
+      if (error) {
+        throw new Error(`Supabase match_memories RPC failed: ${error.message}`);
+      }
+
+      return (data || []) as {
+        id: string;
+        agent_id: string;
+        user_id: string;
+        content: string;
+        metadata: Record<string, any>;
+        memory_type: string;
+        importance_score: number;
+        similarity: number;
+      }[];
+    } catch (error: any) {
+      throw new Error(
+        `SupabaseMemorySystem.searchSimilar failed: ${error?.message || String(error)}`,
+      );
     }
-
-    query = query.limit(limit || 50);
-
-    const { data, error } = await query;
-
-    if (error) {
-      console.error("Supabase searchSimilar error:", error);
-      return [];
-    }
-
-    const similar: VectorMemory[] = (data || []).map((item: any) => {
-      const dbMem: VectorMemory = {
-        id: item.id,
-        content: item.content,
-        embedding: item.embedding,
-        metadata: item.metadata,
-        timestamp: new Date(item.timestamp),
-        scope: item.metadata?.scope || "default",
-        similarity: item.embedding
-          ? cosineSimilarity(embedding, item.embedding)
-          : 0,
-      };
-      return dbMem;
-    });
-
-    return similar
-      .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
-      .slice(0, limit || 10);
   }
 
   async getMemoryById(memoryId: string): Promise<VectorMemory | null> {
@@ -237,18 +282,14 @@ export class SupabaseMemorySystem implements ExecutionEngineMemorySystem {
       embedding: data.embedding || [],
       metadata: data.metadata,
       timestamp: new Date(data.timestamp),
-      scope: data.metadata?.scope || "default",
+      similarity: 0,
     };
   }
 
-  async getMemoriesByScope(
-    scope: string,
-    limitCount: number = 20,
-  ): Promise<VectorMemory[]> {
+  async getMemoriesByScope(limitCount: number = 20): Promise<VectorMemory[]> {
     const { data, error } = await supabase
       .from(this.tableName)
       .select("*")
-      .contains("metadata", { scope })
       .order("timestamp", { ascending: false })
       .limit(limitCount);
 
@@ -263,21 +304,17 @@ export class SupabaseMemorySystem implements ExecutionEngineMemorySystem {
       embedding: item.embedding || [] || [],
       metadata: item.metadata,
       timestamp: new Date(item.timestamp),
-      scope: item.metadata?.scope || "default",
+      similarity: 0,
     }));
   }
 
-  async cleanupOldMemories(
-    scope: string,
-    daysOld: number = 30,
-  ): Promise<number> {
+  async cleanupOldMemories(daysOld: number = 30): Promise<number> {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - daysOld);
 
     const { data, error } = await supabase
       .from(this.tableName)
       .select("id")
-      .contains("metadata", { scope })
       .lte("timestamp", cutoffDate.toISOString());
 
     if (error) {
@@ -303,17 +340,13 @@ export class SupabaseMemorySystem implements ExecutionEngineMemorySystem {
     return ids.length;
   }
 
-  async getMemoryStats(scope?: string): Promise<{
+  async getMemoryStats(): Promise<{
     totalMemories: number;
     averageSimilarity: number;
     oldestMemory: Date | null;
     newestMemory: Date | null;
   }> {
-    let query = supabase.from(this.tableName).select("*");
-
-    if (scope) {
-      query = query.contains("metadata", { scope });
-    }
+    const query = supabase.from(this.tableName).select("*");
 
     const { data, error } = await query;
     if (error) {
@@ -373,12 +406,8 @@ export class SupabaseMemorySystem implements ExecutionEngineMemorySystem {
     }
   }
 
-  async clear(scope?: string): Promise<void> {
-    let query = supabase.from(this.tableName).delete();
-
-    if (scope) {
-      query = query.contains("metadata", { scope });
-    }
+  async clear(): Promise<void> {
+    const query = supabase.from(this.tableName).delete();
 
     const { error } = await query;
     if (error) {

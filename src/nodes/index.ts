@@ -16,6 +16,7 @@ import {
 } from "@google/generative-ai";
 
 import { reactAgentHandler } from "./reactAgent";
+import { SupabaseMemorySystem } from "../utils/memorySystem";
 
 const getProviderFromNodeType = (nodeType: string): string => {
   const type = nodeType.toLowerCase();
@@ -2503,4 +2504,132 @@ nodeRegistry.register({
     reactAgentHandler({ ...context, registry: nodeRegistry }),
   description:
     "ReAct agent: alternates reasoning and actions using allowed tools",
+});
+
+nodeRegistry.register({
+  type: "memory-store",
+  icon: "🧠",
+  label: "Store memory",
+  category: "memory",
+  handler: async (context: any) => {
+    const content =
+      context.input?.text ||
+      context.input?.content ||
+      context.input?.output?.text ||
+      JSON.stringify(context.input);
+    const metadata = context.config?.metadata || {};
+    const memoryType = context.config?.memoryType || "general";
+    const openaiApiKey = context.apiKeys?.openai;
+
+    if (!openaiApiKey) {
+      return {
+        success: false,
+        error:
+          "memory-store requires an OpenAI api key for embedding generation",
+        output: {
+          text: "Memory store failed: missing OpenAI api key",
+          message:
+            "memory-store requires an OpenAI api key for embedding generation",
+          data: {},
+        },
+        logs: ["memory-store failed: missing OpenAI api key"],
+      };
+    }
+
+    try {
+      const memorySystem = new SupabaseMemorySystem();
+      await memorySystem.store(
+        { content, metadata, embedding: [] },
+        openaiApiKey,
+        memoryType,
+      );
+
+      return {
+        success: true,
+        output: {
+          stored: true,
+          content: content.slice(0, 200),
+        },
+        logs: ["memory-store completed successfully"],
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: `memory-store failed: ${error?.message || String(error)}`,
+        output: {
+          text: "Memory store failed",
+          message: error?.message || String(error),
+        },
+        logs: [`memory-store failed: ${error?.message || String(error)}`],
+      };
+    }
+  },
+  description:
+    "Stores content and metadata into the agent long-term vector memory for future recall",
+});
+
+nodeRegistry.register({
+  type: "memory-recall",
+  icon: "🧠",
+  label: "Recall memory",
+  category: "memory",
+  handler: async (context: any) => {
+    const query =
+      context.input?.text ||
+      context.input?.query ||
+      context.input?.content ||
+      JSON.stringify(context.input);
+    const rawLimit = Number(context.config?.limit) || 5;
+    const limit = Math.min(Math.max(rawLimit, 1), 20);
+    const openaiApiKey = context.apiKeys?.openai;
+
+    if (!openaiApiKey) {
+      return {
+        success: false,
+        error:
+          "memory-recall requires an OpenAI api key for embedding generation",
+        output: {
+          text: "Memory recall failed: missing OpenAI api key",
+          message:
+            "memory-recall requires an OpenAI api key for embedding generation",
+          data: {},
+        },
+        logs: ["memory-recall failed: missing OpenAI api key"],
+      };
+    }
+
+    try {
+      const memorySystem = new SupabaseMemorySystem();
+      const memories = await memorySystem.searchSimilar(
+        query,
+        openaiApiKey,
+        limit,
+      );
+
+      return {
+        success: true,
+        output: {
+          memories,
+          count: memories.length,
+          message:
+            memories.length === 0
+              ? "No relevant memories found for this query"
+              : undefined,
+        },
+        logs: [`memory-recall completed with ${memories.length} result(s)`],
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: `memory-recall failed: ${error?.message || String(error)}`,
+        output: {
+          text: "Memory recall failed",
+          message: error?.message || String(error),
+        },
+        logs: [`memory-recall failed: ${error?.message || String(error)}`],
+      };
+    }
+  },
+  description:
+    "Searches agent long-term vector memory for content semantically similar to the query",
 });
