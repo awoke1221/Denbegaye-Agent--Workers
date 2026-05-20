@@ -15,6 +15,8 @@ import {
   FunctionCallingMode,
 } from "@google/generative-ai";
 
+import { reactAgentHandler } from "./reactAgent";
+
 const getProviderFromNodeType = (nodeType: string): string => {
   const type = nodeType.toLowerCase();
   if (type.includes("openai")) return "openai";
@@ -2492,4 +2494,13 @@ nodeRegistry.register({
     };
   },
   description: "Set workflow variables",
+});
+
+// ReAct agent node registration (implements Reason+Act loop)
+nodeRegistry.register({
+  type: "react-agent",
+  handler: async (context: any) =>
+    reactAgentHandler({ ...context, registry: nodeRegistry }),
+  description:
+    "ReAct agent: alternates reasoning and actions using allowed tools",
 });
