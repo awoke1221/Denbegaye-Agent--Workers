@@ -16,6 +16,7 @@ import {
 } from "@google/generative-ai";
 
 import { reactAgentHandler } from "./reactAgent";
+import { humanPauseHandler } from "./control/humanPauseNode";
 import { SupabaseMemorySystem } from "../utils/memorySystem";
 
 const getProviderFromNodeType = (nodeType: string): string => {
@@ -2632,4 +2633,11 @@ nodeRegistry.register({
   },
   description:
     "Searches agent long-term vector memory for content semantically similar to the query",
+});
+
+nodeRegistry.register({
+  type: "human-pause",
+  handler: humanPauseHandler,
+  description:
+    "Pauses agent execution and waits for a human to approve or reject before continuing",
 });
