@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "worker": "tsx src/worker.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "generate-key": "tsx src/scripts/generateKey.ts"
   },
   "keywords": [],
   "author": "",
@@ -31,7 +32,6 @@
     "bull": "^4.16.5",
     "clsx": "^2.1.1",
     "cors": "^2.8.6",
-    "crypto-js": "^4.2.0",
     "dotenv": "^16.3.1",
     "expr-eval": "^2.0.2",
     "express": "^5.2.1",
@@ -49,7 +49,6 @@
   },
   "devDependencies": {
     "@types/bull": "^3.15.9",
-    "@types/crypto-js": "^4.1.1",
     "@types/node": "^20.14.2",
     "@types/nodemailer": "^8.0.0",
     "debug": "^4.4.3",

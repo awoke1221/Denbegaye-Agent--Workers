@@ -1,7 +1,7 @@
 import Redis from "ioredis";
 import { z } from "zod";
 import { supabase } from "./supabaseClient";
-import { decryptValue } from "./encryption";
+import { EncryptionService } from "./encryption";
 import { executeWorkflow } from "./agentEngine";
 import { emitSocketEvent } from "./socket";
 import { logger } from "./logger";
@@ -565,7 +565,57 @@ async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
       })
       .eq("id", jobId);
 
-    const decryptedApiKeys = JSON.parse(decryptValue(apiKeys));
+    // Decrypt API keys with tamper detection
+    let decryptedApiKeys: Record<string, any>;
+    try {
+      decryptedApiKeys = JSON.parse(EncryptionService.decryptValue(apiKeys));
+    } catch (decryptionError) {
+      // Credential decryption failed - indicates tampering or wrong key
+      // Mark as dead-letter immediately (no retries)
+      const errorMessage = "credential_decryption_failed";
+      const errorDetail =
+        decryptionError instanceof Error
+          ? decryptionError.message
+          : String(decryptionError);
+
+      logger.error("API key decryption failed - job marked as dead-letter", {
+        executionId,
+        jobId,
+        errorDetail,
+      });
+
+      await supabase
+        .from("job_queue")
+        .update({
+          status: "dead_letter",
+          error_message: errorMessage,
+          failed_at: new Date().toISOString(),
+        })
+        .eq("id", jobId);
+
+      await updateExecutionStatus(executionId, "failed", {
+        error_message: errorMessage,
+        error_detail: errorDetail,
+        completed_at: new Date().toISOString(),
+      });
+
+      await supabase.from("usage_analytics").insert({
+        user_id: userId,
+        event_type: "credential_decryption_failed",
+        event_data: {
+          job_id: jobId,
+          execution_id: executionId,
+          agent_id: agentId,
+          error_detail: errorDetail,
+          timestamp: new Date().toISOString(),
+        },
+      });
+
+      throw new Error(
+        `${errorMessage}: Credential integrity check failed. The encryption key may have changed or credentials have been tampered with.`,
+      );
+    }
+
     logger.info("Starting workflow execution", {
       executionId,
       nodeCount: config?.nodes?.length || 0,
