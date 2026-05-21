@@ -200,7 +200,7 @@ router.delete(
         return res.status(404).json({ error: "Blog post not found" });
       }
 
-      return res.json({ success: true, slug: data.slug });
+      return res.json({ success: true, slug: (data as any)?.slug });
     } catch (error) {
       console.error("Admin delete blog error:", error);
       if (isBlogTableMissingError(error)) {

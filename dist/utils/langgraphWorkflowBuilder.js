@@ -205,6 +205,10 @@ class AdvancedWorkflowBuilder {
                 previousOutputs: currentNodeResults,
                 variables: state.variables,
                 apiKeys: this.config.apiKeys,
+                edges: this.config.edges || [],
+                nodes: this.config.nodes || [],
+                workflowId: this.config.workflowId,
+                executionId: this.config.executionId,
             };
             // Debug logs
             console.log(`[data-passing] Node ${nodeId} (${nodeConfig.type}) input:`, JSON.stringify(previousOutput).slice(0, 200));

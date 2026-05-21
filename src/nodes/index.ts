@@ -143,16 +143,16 @@ const callTool = async (
     );
   }
 
-  const nodeDefinition = nodeRegistry.get(tool.type);
+  const nodeDefinition = nodeRegistry.get(tool.type || "");
   if (!nodeDefinition || typeof nodeDefinition.handler !== "function") {
     throw new Error(
-      `Connected node ${tool.nodeId} (${tool.type}) does not have a valid handler`,
+      `Connected node ${tool.nodeId} (${tool.type ?? "unknown"}) does not have a valid handler`,
     );
   }
 
   const executionContext = {
     nodeId: tool.nodeId,
-    nodeType: tool.type,
+    nodeType: tool.type || "",
     config: tool.config || {},
     input: params || {},
     previousOutputs: context.previousOutputs || {},
@@ -866,6 +866,7 @@ const extractToolsFromConnectedNodes = (
   name: string;
   description: string;
   config: any;
+  type?: string;
 }> => {
   const { nodeId, edges = [], nodes = [] } = context;
   if (!edges || !nodes) return [];
@@ -903,6 +904,7 @@ const buildFunctionDeclarationsFromNodes = (
     name: string;
     description: string;
     config: any;
+    type?: string;
   }>,
 ): Array<any> => {
   return connectedTools.map((tool) => {

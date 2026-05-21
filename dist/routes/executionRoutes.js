@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.setupExecutionRoutes = void 0;
 const supabaseClient_1 = require("../utils/supabaseClient");
 const logger_1 = require("../utils/logger");
+const socket_1 = require("../utils/socket");
 // Middleware to verify JWT token
 const verifyToken = async (req, res, next) => {
     const authHeader = req.headers.authorization;
@@ -151,6 +152,91 @@ const setupExecutionRoutes = (app) => {
         catch (error) {
             logger_1.logger.error("Error deleting execution", { error });
             res.status(500).json({ error: "Failed to delete execution" });
+        }
+    });
+    // POST /api/executions/:id/approve - Approve human pause
+    app.post("/api/executions/:id/approve", verifyToken, async (req, res) => {
+        try {
+            const userId = req.user?.id;
+            const { id } = req.params;
+            const { response, userId: respondingUserId } = req.body;
+            // Validate response
+            if (!response ||
+                typeof response !== "string" ||
+                response.trim() === "") {
+                return res.status(400).json({ error: "response is required" });
+            }
+            // Fetch execution
+            const { data: execution, error: fetchError } = await supabaseClient_1.supabase
+                .from("agent_executions")
+                .select("user_id, status, metadata")
+                .eq("id", id)
+                .single();
+            if (fetchError || !execution) {
+                return res.status(404).json({ error: "Execution not found" });
+            }
+            // Check authorization
+            if (execution.user_id !== userId) {
+                return res
+                    .status(403)
+                    .json({ error: "not authorized to approve this execution" });
+            }
+            // Check status
+            if (execution.status !== "awaiting_approval") {
+                return res.status(409).json({
+                    error: `this execution is not currently awaiting approval - current status: ${execution.status}`,
+                });
+            }
+            // Update execution with approval
+            const currentMetadata = execution.metadata || {};
+            const updatedMetadata = {
+                ...currentMetadata,
+                humanResponse: response,
+                respondedBy: respondingUserId,
+                respondedAt: new Date().toISOString(),
+                approvedAt: new Date().toISOString(),
+            };
+            const { error: updateError } = await supabaseClient_1.supabase
+                .from("agent_executions")
+                .update({
+                status: "running",
+                metadata: updatedMetadata,
+                updated_at: new Date().toISOString(),
+            })
+                .eq("id", id);
+            if (updateError) {
+                logger_1.logger.error("Failed to update execution with approval", {
+                    error: updateError,
+                });
+                return res
+                    .status(500)
+                    .json({
+                    error: `Failed to approve execution: ${updateError.message}`,
+                });
+            }
+            // Emit socket event
+            try {
+                (0, socket_1.emitSocketEvent)("execution-approved", {
+                    executionId: id,
+                    response,
+                    respondedBy: respondingUserId,
+                });
+            }
+            catch (socketError) {
+                logger_1.logger.error("Failed to emit execution-approved socket event", {
+                    error: socketError,
+                });
+                // Continue even if socket emit fails
+            }
+            res.json({
+                success: true,
+                response,
+                executionId: id,
+            });
+        }
+        catch (error) {
+            logger_1.logger.error("Error approving execution", { error });
+            res.status(500).json({ error: "Failed to approve execution" });
         }
     });
 };

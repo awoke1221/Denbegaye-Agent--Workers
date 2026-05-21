@@ -1,20 +1,42 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ContextMemory = exports.SupabaseMemorySystem = void 0;
+const openai_1 = __importDefault(require("openai"));
 const supabaseClient_1 = require("./supabaseClient");
-// Simple embedding function - in production, use an external embedding model (OpenAI/VertexAI)
-async function generateEmbedding(text) {
-    const words = text.toLowerCase().split(/\s+/);
-    const embedding = new Array(384).fill(0);
-    words.forEach((word, index) => {
-        const hash = word
-            .split("")
-            .reduce((acc, char) => acc + char.charCodeAt(0), 0);
-        embedding[index % embedding.length] =
-            (embedding[index % embedding.length] + hash) % 1000;
-    });
-    const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
-    return embedding.map((val) => val / (magnitude || 1));
+async function generateEmbedding(text, openaiApiKey) {
+    const truncatedText = text?.toString?.().slice(0, 8000) ?? "";
+    if (!openaiApiKey) {
+        // Fall back to a lightweight deterministic embedding for legacy internal use
+        const words = truncatedText.toLowerCase().split(/\s+/);
+        const embedding = new Array(384).fill(0);
+        words.forEach((word, index) => {
+            const hash = word
+                .split("")
+                .reduce((acc, char) => acc + char.charCodeAt(0), 0);
+            embedding[index % embedding.length] =
+                (embedding[index % embedding.length] + hash) % 1000;
+        });
+        const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
+        return embedding.map((val) => val / (magnitude || 1));
+    }
+    try {
+        const client = new openai_1.default({ apiKey: openaiApiKey });
+        const response = await client.embeddings.create({
+            model: "text-embedding-3-small",
+            input: truncatedText,
+        });
+        const embedding = response?.data?.[0]?.embedding;
+        if (!Array.isArray(embedding)) {
+            throw new Error("OpenAI embedding response did not contain a valid embedding vector.");
+        }
+        return embedding;
+    }
+    catch (error) {
+        throw new Error(`Failed to generate embedding: ${error?.message || String(error)}`);
+    }
 }
 function cosineSimilarity(a, b) {
     const dotProduct = a.reduce((sum, val, i) => sum + val * b[i], 0);
@@ -26,29 +48,36 @@ class SupabaseMemorySystem {
     constructor() {
         this.tableName = "memories";
     }
-    async store(memory) {
+    async store(memory, openaiApiKey, memoryType = "general") {
         const memoryId = `mem_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-        const { error } = await supabaseClient_1.supabase.from(this.tableName).insert([
-            {
-                id: memoryId,
-                content: memory.content,
-                embedding: memory.embedding,
-                metadata: { ...memory.metadata, scope: memory.scope },
-                timestamp: new Date().toISOString(),
-                created_at: new Date().toISOString(),
-            },
-        ]);
+        let embedding;
+        if (openaiApiKey) {
+            embedding = await generateEmbedding(memory.content, openaiApiKey);
+        }
+        const insertPayload = {
+            id: memoryId,
+            content: memory.content,
+            metadata: memory.metadata,
+            memory_type: memoryType,
+            timestamp: new Date().toISOString(),
+            created_at: new Date().toISOString(),
+        };
+        if (embedding) {
+            insertPayload.embedding = embedding;
+        }
+        const { error } = await supabaseClient_1.supabase
+            .from(this.tableName)
+            .insert([insertPayload]);
         if (error) {
             throw new Error(`Supabase memory store failed: ${error.message}`);
         }
         return memoryId;
     }
-    async retrieve(query, limit, scope) {
+    async retrieve(query, limit) {
         const queryEmbedding = await generateEmbedding(query);
         const { data, error } = await supabaseClient_1.supabase
             .from(this.tableName)
             .select("*")
-            .contains("metadata", { scope })
             .order("timestamp", { ascending: false })
             .limit(100);
         if (error) {
@@ -61,7 +90,6 @@ class SupabaseMemorySystem {
             embedding: item.embedding,
             metadata: item.metadata,
             timestamp: new Date(item.timestamp),
-            scope: item.metadata?.scope || "default",
             similarity: 0,
         }));
         memories.forEach((mem) => {
@@ -110,34 +138,23 @@ class SupabaseMemorySystem {
         }
         return true;
     }
-    async searchSimilar(embedding, limit, scope) {
-        let query = supabaseClient_1.supabase.from(this.tableName).select("*");
-        if (scope) {
-            query = query.contains("metadata", { scope });
+    async searchSimilar(query, openaiApiKey, limit) {
+        try {
+            const queryEmbedding = await generateEmbedding(query, openaiApiKey);
+            const matchCount = limit ?? 10;
+            const { data, error } = await supabaseClient_1.supabase.rpc("match_memories", {
+                query_embedding: queryEmbedding,
+                match_threshold: 0.75,
+                match_count: matchCount,
+            });
+            if (error) {
+                throw new Error(`Supabase match_memories RPC failed: ${error.message}`);
+            }
+            return (data || []);
         }
-        query = query.limit(limit || 50);
-        const { data, error } = await query;
-        if (error) {
-            console.error("Supabase searchSimilar error:", error);
-            return [];
+        catch (error) {
+            throw new Error(`SupabaseMemorySystem.searchSimilar failed: ${error?.message || String(error)}`);
         }
-        const similar = (data || []).map((item) => {
-            const dbMem = {
-                id: item.id,
-                content: item.content,
-                embedding: item.embedding,
-                metadata: item.metadata,
-                timestamp: new Date(item.timestamp),
-                scope: item.metadata?.scope || "default",
-                similarity: item.embedding
-                    ? cosineSimilarity(embedding, item.embedding)
-                    : 0,
-            };
-            return dbMem;
-        });
-        return similar
-            .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
-            .slice(0, limit || 10);
     }
     async getMemoryById(memoryId) {
         const { data, error } = await supabaseClient_1.supabase
@@ -157,14 +174,13 @@ class SupabaseMemorySystem {
             embedding: data.embedding || [],
             metadata: data.metadata,
             timestamp: new Date(data.timestamp),
-            scope: data.metadata?.scope || "default",
+            similarity: 0,
         };
     }
-    async getMemoriesByScope(scope, limitCount = 20) {
+    async getMemoriesByScope(limitCount = 20) {
         const { data, error } = await supabaseClient_1.supabase
             .from(this.tableName)
             .select("*")
-            .contains("metadata", { scope })
             .order("timestamp", { ascending: false })
             .limit(limitCount);
         if (error) {
@@ -177,16 +193,15 @@ class SupabaseMemorySystem {
             embedding: item.embedding || [] || [],
             metadata: item.metadata,
             timestamp: new Date(item.timestamp),
-            scope: item.metadata?.scope || "default",
+            similarity: 0,
         }));
     }
-    async cleanupOldMemories(scope, daysOld = 30) {
+    async cleanupOldMemories(daysOld = 30) {
         const cutoffDate = new Date();
         cutoffDate.setDate(cutoffDate.getDate() - daysOld);
         const { data, error } = await supabaseClient_1.supabase
             .from(this.tableName)
             .select("id")
-            .contains("metadata", { scope })
             .lte("timestamp", cutoffDate.toISOString());
         if (error) {
             console.error("Supabase cleanupOldMemories error:", error);
@@ -206,11 +221,8 @@ class SupabaseMemorySystem {
         }
         return ids.length;
     }
-    async getMemoryStats(scope) {
-        let query = supabaseClient_1.supabase.from(this.tableName).select("*");
-        if (scope) {
-            query = query.contains("metadata", { scope });
-        }
+    async getMemoryStats() {
+        const query = supabaseClient_1.supabase.from(this.tableName).select("*");
         const { data, error } = await query;
         if (error) {
             console.error("Supabase getMemoryStats error:", error);
@@ -254,11 +266,8 @@ class SupabaseMemorySystem {
             throw new Error(`Failed to update memory ${memoryId}`);
         }
     }
-    async clear(scope) {
-        let query = supabaseClient_1.supabase.from(this.tableName).delete();
-        if (scope) {
-            query = query.contains("metadata", { scope });
-        }
+    async clear() {
+        const query = supabaseClient_1.supabase.from(this.tableName).delete();
         const { error } = await query;
         if (error) {
             console.error("Supabase clear error:", error);

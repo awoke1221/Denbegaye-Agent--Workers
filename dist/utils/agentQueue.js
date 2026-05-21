@@ -478,7 +478,49 @@ async function processJobFunction(jobData, jobId) {
             started_at: new Date().toISOString(),
         })
             .eq("id", jobId);
-        const decryptedApiKeys = JSON.parse((0, encryption_1.decryptValue)(apiKeys));
+        // Decrypt API keys with tamper detection
+        let decryptedApiKeys;
+        try {
+            decryptedApiKeys = JSON.parse(encryption_1.EncryptionService.decryptValue(apiKeys));
+        }
+        catch (decryptionError) {
+            // Credential decryption failed - indicates tampering or wrong key
+            // Mark as dead-letter immediately (no retries)
+            const errorMessage = "credential_decryption_failed";
+            const errorDetail = decryptionError instanceof Error
+                ? decryptionError.message
+                : String(decryptionError);
+            logger_1.logger.error("API key decryption failed - job marked as dead-letter", {
+                executionId,
+                jobId,
+                errorDetail,
+            });
+            await supabaseClient_1.supabase
+                .from("job_queue")
+                .update({
+                status: "dead_letter",
+                error_message: errorMessage,
+                failed_at: new Date().toISOString(),
+            })
+                .eq("id", jobId);
+            await updateExecutionStatus(executionId, "failed", {
+                error_message: errorMessage,
+                error_detail: errorDetail,
+                completed_at: new Date().toISOString(),
+            });
+            await supabaseClient_1.supabase.from("usage_analytics").insert({
+                user_id: userId,
+                event_type: "credential_decryption_failed",
+                event_data: {
+                    job_id: jobId,
+                    execution_id: executionId,
+                    agent_id: agentId,
+                    error_detail: errorDetail,
+                    timestamp: new Date().toISOString(),
+                },
+            });
+            throw new Error(`${errorMessage}: Credential integrity check failed. The encryption key may have changed or credentials have been tampered with.`);
+        }
         logger_1.logger.info("Starting workflow execution", {
             executionId,
             nodeCount: config?.nodes?.length || 0,
@@ -522,7 +564,7 @@ async function processJobFunction(jobData, jobId) {
             }
             return node;
         });
-        const result = await (0, agentEngine_1.executeWorkflow)(nodesForExecution, config?.edges || [], input ?? {}, decryptedApiKeys, executionId, userId, {
+        const result = await (0, agentEngine_1.executeWorkflow)(nodesForExecution, config?.edges || [], input ?? {}, decryptedApiKeys, executionId, userId, agentId, {
             onNodeStart: (nodeId) => {
                 logger_1.logger.debug("Node started", { executionId, nodeId });
                 // Emit node-started event to frontend

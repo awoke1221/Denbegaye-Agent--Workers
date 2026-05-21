@@ -348,6 +348,10 @@ class AdvancedWorkflowExecutor {
                 apiKeys,
                 config: node.config || {},
                 validation: nodeDefinition.validation,
+                agentId: this.context.agentId,
+                userId: this.context.userId,
+                executionId: this.context.executionId,
+                workflowId: this.context.workflowId,
             });
             if (!result.success) {
                 throw new Error(result.error || `Node ${node.id} failed`);
@@ -595,7 +599,7 @@ class AdvancedWorkflowExecutor {
     }
 }
 exports.AdvancedWorkflowExecutor = AdvancedWorkflowExecutor;
-async function executeWorkflow(nodes, edges, input, apiKeys, executionId, userId, options) {
+async function executeWorkflow(nodes, edges, input, apiKeys, executionId, userId, agentId, options) {
     const startTime = Date.now();
     try {
         // Try LangGraph execution first
@@ -673,6 +677,7 @@ async function executeWorkflow(nodes, edges, input, apiKeys, executionId, userId
             const advancedExecutor = new AdvancedWorkflowExecutor({
                 executionId,
                 userId,
+                agentId,
                 workflowId: workflowConfig.workflowId,
                 startTime: new Date(startTime),
                 maxRetries: 2,

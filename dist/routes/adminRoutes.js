@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.setupAdminRoutes = void 0;
+exports.setupAdminRoutes = exports.adminOnly = void 0;
 const supabaseClient_1 = require("../utils/supabaseClient");
 const parseIdList = (value) => {
     if (!value)
@@ -36,6 +36,7 @@ const adminOnly = async (req, res, next) => {
     req.profile = profile;
     next();
 };
+exports.adminOnly = adminOnly;
 const getDashboardStats = async () => {
     const now = new Date();
     const activeSince = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -170,7 +171,7 @@ const systemSettings = {
     system_name: "Denbegnaye Agent Platform",
 };
 const setupAdminRoutes = (app) => {
-    app.get("/api/admin/dashboard", adminOnly, async (req, res) => {
+    app.get("/api/admin/dashboard", exports.adminOnly, async (req, res) => {
         try {
             const stats = await getDashboardStats();
             const queueStats = await getQueueDashboardStats();
@@ -183,7 +184,7 @@ const setupAdminRoutes = (app) => {
                 .json({ error: "Failed to load admin dashboard" });
         }
     });
-    app.get("/api/admin/queue", adminOnly, async (req, res) => {
+    app.get("/api/admin/queue", exports.adminOnly, async (req, res) => {
         try {
             const queueStats = await getQueueDashboardStats();
             return res.json({ queueStats });
@@ -195,7 +196,7 @@ const setupAdminRoutes = (app) => {
                 .json({ error: "Failed to load queue dashboard" });
         }
     });
-    app.get("/api/admin/agents", adminOnly, async (req, res) => {
+    app.get("/api/admin/agents", exports.adminOnly, async (req, res) => {
         try {
             const page = parseIntOrDefault(req.query.page, 1);
             const limit = parseIntOrDefault(req.query.limit, 50);
@@ -299,7 +300,7 @@ const setupAdminRoutes = (app) => {
             return res.status(500).json({ error: "Failed to load agents" });
         }
     });
-    app.post("/api/admin/agents", adminOnly, async (req, res) => {
+    app.post("/api/admin/agents", exports.adminOnly, async (req, res) => {
         try {
             const { agentId, action } = req.body;
             if (!agentId || !action) {
@@ -330,7 +331,7 @@ const setupAdminRoutes = (app) => {
             return res.status(500).json({ error: "Failed to update agent" });
         }
     });
-    app.get("/api/admin/executions", adminOnly, async (req, res) => {
+    app.get("/api/admin/executions", exports.adminOnly, async (req, res) => {
         try {
             const statusValues = parseIdList(req.query.status);
             const limit = parseIntOrDefault(req.query.limit, 50);
@@ -403,7 +404,7 @@ const setupAdminRoutes = (app) => {
             return res.status(500).json({ error: "Failed to load executions" });
         }
     });
-    app.patch("/api/admin/executions", adminOnly, async (req, res) => {
+    app.patch("/api/admin/executions", exports.adminOnly, async (req, res) => {
         try {
             const { executionId, action } = req.body;
             if (!executionId || !action) {
@@ -428,7 +429,7 @@ const setupAdminRoutes = (app) => {
             return res.status(500).json({ error: "Failed to update execution" });
         }
     });
-    app.get("/api/admin/users", adminOnly, async (req, res) => {
+    app.get("/api/admin/users", exports.adminOnly, async (req, res) => {
         try {
             const page = parseIntOrDefault(req.query.page, 1);
             const limit = parseIntOrDefault(req.query.limit, 50);
@@ -517,7 +518,7 @@ const setupAdminRoutes = (app) => {
             return res.status(500).json({ error: "Failed to load users" });
         }
     });
-    app.patch("/api/admin/users", adminOnly, async (req, res) => {
+    app.patch("/api/admin/users", exports.adminOnly, async (req, res) => {
         try {
             const { userId, role } = req.body;
             if (!userId || !role) {
@@ -539,7 +540,7 @@ const setupAdminRoutes = (app) => {
             return res.status(500).json({ error: "Failed to update user role" });
         }
     });
-    app.get("/api/admin/subscriptions", adminOnly, async (req, res) => {
+    app.get("/api/admin/subscriptions", exports.adminOnly, async (req, res) => {
         try {
             const page = parseIntOrDefault(req.query.page, 1);
             const limit = parseIntOrDefault(req.query.limit, 50);
@@ -601,7 +602,7 @@ const setupAdminRoutes = (app) => {
             return res.status(500).json({ error: "Failed to load subscriptions" });
         }
     });
-    app.patch("/api/admin/subscriptions", adminOnly, async (req, res) => {
+    app.patch("/api/admin/subscriptions", exports.adminOnly, async (req, res) => {
         try {
             const { subscriptionId, action, status, limits } = req.body;
             if (!subscriptionId || !action) {
@@ -636,7 +637,7 @@ const setupAdminRoutes = (app) => {
             return res.status(500).json({ error: "Failed to update subscription" });
         }
     });
-    app.get("/api/admin/system/metrics", adminOnly, async (req, res) => {
+    app.get("/api/admin/system/metrics", exports.adminOnly, async (req, res) => {
         try {
             const stats = await getDashboardStats();
             const metrics = {
@@ -677,7 +678,7 @@ const setupAdminRoutes = (app) => {
             return res.status(500).json({ error: "Failed to load system metrics" });
         }
     });
-    app.get("/api/admin/system/api-keys", adminOnly, async (req, res) => {
+    app.get("/api/admin/system/api-keys", exports.adminOnly, async (req, res) => {
         try {
             const { data: apiKeys, error } = await supabaseClient_1.supabase
                 .from("user_api_keys")
@@ -692,10 +693,10 @@ const setupAdminRoutes = (app) => {
             return res.status(500).json({ error: "Failed to load API keys" });
         }
     });
-    app.get("/api/admin/system/settings", adminOnly, async (req, res) => {
+    app.get("/api/admin/system/settings", exports.adminOnly, async (req, res) => {
         return res.json({ settings: systemSettings });
     });
-    app.put("/api/admin/system/settings", adminOnly, async (req, res) => {
+    app.put("/api/admin/system/settings", exports.adminOnly, async (req, res) => {
         try {
             const updated = req.body;
             Object.assign(systemSettings, updated);
@@ -708,7 +709,7 @@ const setupAdminRoutes = (app) => {
                 .json({ error: "Failed to update system settings" });
         }
     });
-    app.post("/api/admin/system", adminOnly, async (req, res) => {
+    app.post("/api/admin/system", exports.adminOnly, async (req, res) => {
         try {
             const { action } = req.body;
             if (!action) {
