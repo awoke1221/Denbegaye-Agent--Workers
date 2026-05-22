@@ -19,7 +19,8 @@ declare global {
 }
 
 // Load environment variables
-dotenv.config({ path: ".env.local" });
+const envPath = process.env.NODE_ENV === "production" ? ".env" : ".env.local";
+dotenv.config({ path: envPath });
 
 const app = express();
 const server = createServer(app);
@@ -154,6 +155,9 @@ io.on("connection", (socket) => {
 server.listen(PORT, () => {
   logger.info(`Workers server running on port ${PORT}`);
   logger.info(`Advanced workflow monitoring enabled`);
+  logger.info(
+    `Environment: ${process.env.NODE_ENV ?? "development"}, log level: ${process.env.LOG_LEVEL ?? "info"}`,
+  );
 });
 
 export default app;
