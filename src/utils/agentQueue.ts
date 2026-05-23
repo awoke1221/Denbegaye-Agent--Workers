@@ -1,5 +1,9 @@
 import Redis from "ioredis";
 import { initBullQueue, addBullJob, startBullWorker } from "./bullQueue";
+import {
+  createRedisConnection,
+  attachRedisEventHandlers,
+} from "./redisConnection";
 import { z } from "zod";
 import { supabase } from "./supabaseClient";
 import { EncryptionService } from "./encryption";
@@ -7,19 +11,29 @@ import { executeWorkflow } from "./agentEngine";
 import { emitSocketEvent } from "./socket";
 import { logger } from "./logger";
 import { AgentEdgeInputSchema } from "./validation";
-import { SERVICE_ROLE, USE_BULL_QUEUE } from "../config";
+import {
+  SERVICE_ROLE,
+  USE_BULL_QUEUE,
+  IS_API_ONLY,
+  ENABLE_QUEUE_PROCESSING,
+  ENABLE_BULL_WORKER,
+} from "../config";
 
-const REDIS_URL = process.env.REDIS_URL;
 const REDIS_QUEUE_KEY = "agent_execution_queue";
 let redisClient: Redis | null = null;
 let redisConnected = false;
 let redisReconnectAttempt = 0;
 
-if (REDIS_URL) {
-  redisClient = new Redis(REDIS_URL);
-  redisClient.on("connect", () => {
-    console.info("Redis client connecting...");
+try {
+  redisClient = createRedisConnection();
+  attachRedisEventHandlers(redisClient, "AgentQueue");
+} catch (error) {
+  console.warn("Redis queue disabled because connection could not be created", {
+    error,
   });
+}
+
+if (redisClient) {
   redisClient.on("ready", () => {
     if (!redisConnected) {
       console.info(
@@ -33,6 +47,7 @@ if (REDIS_URL) {
     redisConnected = true;
     redisReconnectAttempt = 0;
   });
+
   redisClient.on("reconnecting", (delay: number) => {
     redisReconnectAttempt += 1;
     redisConnected = false;
@@ -40,14 +55,17 @@ if (REDIS_URL) {
       `Redis reconnect attempt ${redisReconnectAttempt} scheduled in ${delay}ms`,
     );
   });
+
   redisClient.on("error", (error) => {
     redisConnected = false;
     console.error("Redis client error:", error);
   });
+
   redisClient.on("end", () => {
     redisConnected = false;
     console.warn("Redis client connection ended");
   });
+
   redisClient.on("close", () => {
     redisConnected = false;
     console.warn("Redis client connection closed");

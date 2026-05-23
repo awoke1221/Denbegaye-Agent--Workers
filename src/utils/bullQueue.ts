@@ -9,8 +9,11 @@ import {
   bullJobsDelayed,
   refreshBullQueueMetrics,
 } from "./queueMetrics";
+import {
+  createRedisConnection,
+  attachRedisEventHandlers,
+} from "./redisConnection";
 
-const REDIS_URL = process.env.REDIS_URL;
 const QUEUE_NAME = process.env.BULL_QUEUE_NAME || "agent-execution-queue";
 const CONCURRENCY = Number(process.env.WORKER_CONCURRENCY || "4");
 
@@ -20,16 +23,25 @@ let scheduler: JobScheduler | null = null;
 let queueEvents: QueueEvents | null = null;
 
 export async function initBullQueue() {
-  if (!REDIS_URL) {
-    logger.info("BULL: REDIS_URL not set — skipping Bull initialization");
+  let redisConnection;
+  try {
+    redisConnection = createRedisConnection();
+    attachRedisEventHandlers(redisConnection, "BullQueue");
+  } catch (error) {
+    logger.info(
+      "BULL: Redis connection could not be created — skipping Bull initialization",
+      { error },
+    );
     return;
   }
 
-  const redisOpts = { url: REDIS_URL };
-
-  queue = new Queue(QUEUE_NAME, { connection: redisOpts as any });
-  scheduler = new JobScheduler(QUEUE_NAME, { connection: redisOpts as any });
-  queueEvents = new QueueEvents(QUEUE_NAME, { connection: redisOpts as any });
+  queue = new Queue(QUEUE_NAME, { connection: redisConnection as any });
+  scheduler = new JobScheduler(QUEUE_NAME, {
+    connection: redisConnection as any,
+  });
+  queueEvents = new QueueEvents(QUEUE_NAME, {
+    connection: redisConnection as any,
+  });
 
   // Graceful event listeners
   queue.on("error", (err) => logger.error("Bull queue error", { err }));

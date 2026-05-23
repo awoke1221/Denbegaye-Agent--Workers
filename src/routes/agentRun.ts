@@ -8,6 +8,7 @@ import {
 } from "../utils/validation";
 import { agentQueue, agentRunSchema } from "../utils/agentQueue";
 import { logger } from "../utils/logger";
+import { checkRateLimit, incrementUsage } from "../utils/rateLimiting";
 import { createHash } from "crypto";
 
 // Status transition validation
@@ -44,6 +45,18 @@ export const agentRunHandler = async (req: Request, res: Response) => {
     if (error || !user) {
       return res.status(401).json({ error: "Invalid token" });
     }
+
+    const rateCheck = await checkRateLimit(user.id, "api_calls");
+    if (!rateCheck.allowed) {
+      return res.status(429).json({
+        error: "Rate limit exceeded",
+        current: rateCheck.current,
+        limit: rateCheck.limit,
+        resetTime: rateCheck.resetTime,
+      });
+    }
+
+    await incrementUsage(user.id, "api_calls", 1);
 
     const userId = user.id;
     const body = req.body;
