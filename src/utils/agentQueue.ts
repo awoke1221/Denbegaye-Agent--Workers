@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import { initBullQueue, addBullJob, startBullWorker } from "./bullQueue";
 import { z } from "zod";
 import { supabase } from "./supabaseClient";
 import { EncryptionService } from "./encryption";
@@ -6,6 +7,7 @@ import { executeWorkflow } from "./agentEngine";
 import { emitSocketEvent } from "./socket";
 import { logger } from "./logger";
 import { AgentEdgeInputSchema } from "./validation";
+import { SERVICE_ROLE, USE_BULL_QUEUE } from "../config";
 
 const REDIS_URL = process.env.REDIS_URL;
 const REDIS_QUEUE_KEY = "agent_execution_queue";
@@ -243,22 +245,55 @@ class DatabaseQueue {
       await publishJobToRedis(jobId, jobData);
     }
 
+    // If configured, push to Bull queue for Redis-backed processing
+    if (USE_BULL_QUEUE) {
+      try {
+        await addBullJob(jobId, jobData, { priority: options.priority || 1 });
+      } catch (e) {
+        console.error("Failed to add job to Bull queue", e);
+      }
+    }
+
     return { id: jobId };
   }
 
   async start() {
     if (this.started) return;
     this.started = true;
+
+    const isApiOnly = SERVICE_ROLE === "api";
+    const isWorkerNode = SERVICE_ROLE === "worker" || SERVICE_ROLE === "all";
+
     logger.info("Agent queue start invoked", {
       started: this.started,
+      serviceRole: SERVICE_ROLE,
       redisEnabled: Boolean(redisClient),
       maxConcurrency: this.maxConcurrency,
     });
-    if (redisClient) {
-      void this.startRedisConsumer();
+
+    if (isWorkerNode) {
+      if (redisClient) {
+        void this.startRedisConsumer();
+      }
       void this.startProcessing();
     } else {
-      void this.startProcessing();
+      logger.info("API-only node, skipping local queue processing loops", {
+        serviceRole: SERVICE_ROLE,
+      });
+    }
+
+    if (USE_BULL_QUEUE) {
+      await initBullQueue();
+      if (!isApiOnly) {
+        void startBullWorker();
+      } else {
+        logger.info(
+          "API-only node will initialize Bull queue for enqueuing jobs only",
+          {
+            serviceRole: SERVICE_ROLE,
+          },
+        );
+      }
     }
   }
 
@@ -532,7 +567,10 @@ export const agentRunSchema = z
     },
   );
 
-async function processJobFunction(jobData: AgentRunPayload, jobId: string) {
+export async function processJobFunction(
+  jobData: AgentRunPayload,
+  jobId: string,
+) {
   const { agentId, userId, input, config, apiKeys, executionId } = jobData;
   if (!executionId) {
     throw new Error("Missing executionId");

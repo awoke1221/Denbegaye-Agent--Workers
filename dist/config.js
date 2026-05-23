@@ -1,0 +1,22 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.LOG_LEVEL = exports.SERVICE_NAME = exports.OTLP_ENDPOINT = exports.PORT = exports.FRONTEND_URL = exports.WORKER_CONCURRENCY = exports.BULL_QUEUE_NAME = exports.USE_BULL_QUEUE = exports.REDIS_URL = exports.INSTANCE_ID = exports.SERVICE_ROLE = exports.NODE_ENV = void 0;
+const dotenv_1 = __importDefault(require("dotenv"));
+const os_1 = __importDefault(require("os"));
+const envPath = process.env.NODE_ENV === "production" ? ".env" : ".env.local";
+dotenv_1.default.config({ path: envPath });
+exports.NODE_ENV = process.env.NODE_ENV || "development";
+exports.SERVICE_ROLE = (process.env.SERVICE_ROLE || "all").toLowerCase();
+exports.INSTANCE_ID = process.env.INSTANCE_ID || process.env.HOSTNAME || os_1.default.hostname();
+exports.REDIS_URL = process.env.REDIS_URL || "";
+exports.USE_BULL_QUEUE = process.env.USE_BULL_QUEUE === "true";
+exports.BULL_QUEUE_NAME = process.env.BULL_QUEUE_NAME || "agent-execution-queue";
+exports.WORKER_CONCURRENCY = Number(process.env.WORKER_CONCURRENCY || "4");
+exports.FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+exports.PORT = Number(process.env.PORT || "3001");
+exports.OTLP_ENDPOINT = process.env.OTLP_ENDPOINT || "";
+exports.SERVICE_NAME = process.env.SERVICE_NAME || "denbegaye-agent-workers";
+exports.LOG_LEVEL = process.env.LOG_LEVEL || "info";

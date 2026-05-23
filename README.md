@@ -120,6 +120,25 @@ npm run build
 npm start
 ```
 
+### Multi-instance scaling
+
+This service supports role-based deployment so API and worker processes can scale independently.
+
+- `SERVICE_ROLE=api` - starts only the API/server process and enqueues jobs.
+- `SERVICE_ROLE=worker` - starts only the worker process that consumes jobs and executes workflows.
+- `SERVICE_ROLE=all` - starts both API and worker behavior in the same process.
+
+Recommended commands:
+
+```bash
+npm run dev:api      # development API process
+npm run dev:worker   # development worker process
+npm run start:api    # production API process
+npm run start:worker # production worker process
+```
+
+For multi-instance deployments, set `REDIS_URL` and `BULL_QUEUE_NAME` so all instances share the same Redis queue and Socket.IO adapter.
+
 ### Testing
 
 Run the test suite:

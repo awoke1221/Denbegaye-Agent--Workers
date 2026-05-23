@@ -727,6 +727,32 @@ export const setupAdminRoutes = (app: Express) => {
   );
 
   app.get(
+    "/api/admin/rate-limit-tiers",
+    adminOnly,
+    async (req: AdminRequest, res: Response) => {
+      try {
+        const { data: plans, error } = await supabase
+          .from("pricing_plans")
+          .select(
+            "id, name, tier, description, price_monthly, price_yearly, limits, features",
+          );
+
+        if (error) {
+          throw error;
+        }
+
+        const tierPayload = plans || [];
+        return res.json({ tiers: tierPayload, rateLimitTiers: tierPayload });
+      } catch (error) {
+        console.error("Admin rate limit tiers error:", error);
+        return res
+          .status(500)
+          .json({ error: "Failed to load rate limit tiers" });
+      }
+    },
+  );
+
+  app.get(
     "/api/admin/subscriptions",
     adminOnly,
     async (req: AdminRequest, res: Response) => {
@@ -861,6 +887,7 @@ export const setupAdminRoutes = (app: Express) => {
     async (req: AdminRequest, res: Response) => {
       try {
         const stats = await getDashboardStats();
+        const queueStats = await getQueueDashboardStats();
         const metrics = {
           database: {
             status: stats.systemHealth.database,
@@ -891,8 +918,16 @@ export const setupAdminRoutes = (app: Express) => {
             network_in_mbps: 6.2,
             network_out_mbps: 4.8,
           },
+          queue: {
+            queued: queueStats.counts.queued,
+            processing: queueStats.counts.processing,
+            completed: queueStats.counts.completed,
+            failed: queueStats.counts.failed,
+            dead_letter: queueStats.counts.deadLetter,
+            delayed_retry: queueStats.counts.delayedRetry,
+          },
         };
-        return res.json({ metrics });
+        return res.json({ metrics, queueStats });
       } catch (error) {
         console.error("Admin system metrics error:", error);
         return res.status(500).json({ error: "Failed to load system metrics" });

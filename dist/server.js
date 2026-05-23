@@ -3,10 +3,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+const redis_adapter_1 = require("@socket.io/redis-adapter");
+const redis_1 = require("redis");
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const helmet_1 = __importDefault(require("helmet"));
-const dotenv_1 = __importDefault(require("dotenv"));
 const http_1 = require("http");
 const socket_io_1 = require("socket.io");
 const ioredis_1 = __importDefault(require("ioredis"));
@@ -16,22 +17,37 @@ const socket_1 = require("./utils/socket");
 const routes_1 = require("./routes");
 const webhook_1 = require("./nodes/triggers/webhook");
 const workflowMonitoring_1 = require("./utils/workflowMonitoring");
-// Load environment variables
-const envPath = process.env.NODE_ENV === "production" ? ".env" : ".env.local";
-dotenv_1.default.config({ path: envPath });
+const config_1 = require("./config");
+require("./telemetry");
 const app = (0, express_1.default)();
 const server = (0, http_1.createServer)(app);
 const io = new socket_io_1.Server(server, {
     cors: {
-        origin: process.env.FRONTEND_URL || "http://localhost:3000",
+        origin: config_1.FRONTEND_URL,
         methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
     },
 });
-const PORT = process.env.PORT || 3001;
+const socketAdapterReady = async () => {
+    if (!config_1.REDIS_URL) {
+        logger_1.logger.info("Socket.IO Redis adapter disabled because REDIS_URL is not configured");
+        return;
+    }
+    try {
+        const pubClient = (0, redis_1.createClient)({ url: config_1.REDIS_URL });
+        const subClient = pubClient.duplicate();
+        await Promise.all([pubClient.connect(), subClient.connect()]);
+        io.adapter((0, redis_adapter_1.createAdapter)(pubClient, subClient));
+        logger_1.logger.info("Socket.IO Redis adapter enabled for multi-instance event synchronization", {
+            instanceId: config_1.INSTANCE_ID,
+        });
+    }
+    catch (error) {
+        logger_1.logger.warn("Failed to initialize Socket.IO Redis adapter", { error });
+    }
+};
+void socketAdapterReady();
 const EXECUTION_EVENTS_CHANNEL = "agent_execution_events";
-const redisSubscriber = process.env.REDIS_URL
-    ? new ioredis_1.default(process.env.REDIS_URL)
-    : null;
+const redisSubscriber = config_1.REDIS_URL ? new ioredis_1.default(config_1.REDIS_URL) : null;
 if (redisSubscriber) {
     redisSubscriber.on("ready", () => {
         logger_1.logger.info("Redis subscriber connected for execution events");
@@ -75,7 +91,24 @@ app.use(express_1.default.json({ limit: "10mb" }));
 app.use(express_1.default.urlencoded({ extended: true }));
 // Health check endpoint
 app.get("/health", (req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+    res.json({
+        status: "ok",
+        timestamp: new Date().toISOString(),
+        role: config_1.SERVICE_ROLE,
+        instanceId: config_1.INSTANCE_ID,
+    });
+});
+// Prometheus metrics endpoint (exposes prom-client registry)
+const telemetry_1 = require("./telemetry");
+app.get('/metrics', async (req, res) => {
+    try {
+        const metrics = await telemetry_1.metricsRegistry.metrics();
+        res.set('Content-Type', telemetry_1.metricsContentType);
+        res.send(metrics);
+    }
+    catch (error) {
+        res.status(500).send('Failed to collect metrics');
+    }
 });
 // Advanced health check endpoint with monitoring metrics
 app.get("/health/advanced", async (req, res) => {
@@ -132,9 +165,10 @@ io.on("connection", (socket) => {
         logger_1.logger.info(`Client disconnected: ${socket.id}`);
     });
 });
-server.listen(PORT, () => {
-    logger_1.logger.info(`Workers server running on port ${PORT}`);
+server.listen(config_1.PORT, () => {
+    logger_1.logger.info(`Workers server running on port ${config_1.PORT}`);
+    logger_1.logger.info(`Service role: ${config_1.SERVICE_ROLE}, instance: ${config_1.INSTANCE_ID}`);
     logger_1.logger.info(`Advanced workflow monitoring enabled`);
-    logger_1.logger.info(`Environment: ${process.env.NODE_ENV ?? "development"}, log level: ${process.env.LOG_LEVEL ?? "info"}`);
+    logger_1.logger.info(`Environment: ${config_1.NODE_ENV}, log level: ${process.env.LOG_LEVEL ?? "info"}`);
 });
 exports.default = app;

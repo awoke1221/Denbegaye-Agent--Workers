@@ -5,7 +5,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.QueueManager = exports.deadLetterQueue = exports.agentQueue = exports.agentRunSchema = void 0;
 exports.reserveAgentQueueJob = reserveAgentQueueJob;
+exports.processJobFunction = processJobFunction;
 const ioredis_1 = __importDefault(require("ioredis"));
+const bullQueue_1 = require("./bullQueue");
 const zod_1 = require("zod");
 const supabaseClient_1 = require("./supabaseClient");
 const encryption_1 = require("./encryption");
@@ -13,6 +15,7 @@ const agentEngine_1 = require("./agentEngine");
 const socket_1 = require("./socket");
 const logger_1 = require("./logger");
 const validation_1 = require("./validation");
+const config_1 = require("../config");
 const REDIS_URL = process.env.REDIS_URL;
 const REDIS_QUEUE_KEY = "agent_execution_queue";
 let redisClient = null;
@@ -181,23 +184,50 @@ class DatabaseQueue {
         if (redisClient) {
             await publishJobToRedis(jobId, jobData);
         }
+        // If configured, push to Bull queue for Redis-backed processing
+        if (config_1.USE_BULL_QUEUE) {
+            try {
+                await (0, bullQueue_1.addBullJob)(jobId, jobData, { priority: options.priority || 1 });
+            }
+            catch (e) {
+                console.error('Failed to add job to Bull queue', e);
+            }
+        }
         return { id: jobId };
     }
     async start() {
         if (this.started)
             return;
         this.started = true;
+        const isApiOnly = config_1.SERVICE_ROLE === "api";
+        const isWorkerNode = config_1.SERVICE_ROLE === "worker" || config_1.SERVICE_ROLE === "all";
         logger_1.logger.info("Agent queue start invoked", {
             started: this.started,
+            serviceRole: config_1.SERVICE_ROLE,
             redisEnabled: Boolean(redisClient),
             maxConcurrency: this.maxConcurrency,
         });
-        if (redisClient) {
-            void this.startRedisConsumer();
+        if (isWorkerNode) {
+            if (redisClient) {
+                void this.startRedisConsumer();
+            }
             void this.startProcessing();
         }
         else {
-            void this.startProcessing();
+            logger_1.logger.info("API-only node, skipping local queue processing loops", {
+                serviceRole: config_1.SERVICE_ROLE,
+            });
+        }
+        if (config_1.USE_BULL_QUEUE) {
+            await (0, bullQueue_1.initBullQueue)();
+            if (!isApiOnly) {
+                void (0, bullQueue_1.startBullWorker)();
+            }
+            else {
+                logger_1.logger.info("API-only node will initialize Bull queue for enqueuing jobs only", {
+                    serviceRole: config_1.SERVICE_ROLE,
+                });
+            }
         }
     }
     async startProcessing() {

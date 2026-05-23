@@ -1,7 +1,8 @@
+import { createAdapter } from "@socket.io/redis-adapter";
+import { createClient } from "redis";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
-import dotenv from "dotenv";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import Redis from "ioredis";
@@ -11,6 +12,15 @@ import { emitSocketEvent } from "./utils/socket";
 import { setupRoutes } from "./routes";
 import { WebhookHandler } from "./nodes/triggers/webhook";
 import { workflowMonitoring } from "./utils/workflowMonitoring";
+import {
+  SERVICE_ROLE,
+  INSTANCE_ID,
+  REDIS_URL,
+  FRONTEND_URL,
+  PORT,
+  NODE_ENV,
+} from "./config";
+import "./telemetry";
 
 // Extend global interface
 declare global {
@@ -18,24 +28,42 @@ declare global {
   var webhookHandler: WebhookHandler;
 }
 
-// Load environment variables
-const envPath = process.env.NODE_ENV === "production" ? ".env" : ".env.local";
-dotenv.config({ path: envPath });
-
 const app = express();
 const server = createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: FRONTEND_URL,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   },
 });
-const PORT = process.env.PORT || 3001;
+
+const socketAdapterReady = async () => {
+  if (!REDIS_URL) {
+    logger.info(
+      "Socket.IO Redis adapter disabled because REDIS_URL is not configured",
+    );
+    return;
+  }
+
+  try {
+    const pubClient = createClient({ url: REDIS_URL });
+    const subClient = pubClient.duplicate();
+    await Promise.all([pubClient.connect(), subClient.connect()]);
+    io.adapter(createAdapter(pubClient, subClient));
+    logger.info(
+      "Socket.IO Redis adapter enabled for multi-instance event synchronization",
+      {
+        instanceId: INSTANCE_ID,
+      },
+    );
+  } catch (error) {
+    logger.warn("Failed to initialize Socket.IO Redis adapter", { error });
+  }
+};
+void socketAdapterReady();
 
 const EXECUTION_EVENTS_CHANNEL = "agent_execution_events";
-const redisSubscriber = process.env.REDIS_URL
-  ? new Redis(process.env.REDIS_URL)
-  : null;
+const redisSubscriber = REDIS_URL ? new Redis(REDIS_URL) : null;
 
 if (redisSubscriber) {
   redisSubscriber.on("ready", () => {
@@ -86,7 +114,24 @@ app.use(express.urlencoded({ extended: true }));
 
 // Health check endpoint
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    role: SERVICE_ROLE,
+    instanceId: INSTANCE_ID,
+  });
+});
+
+// Prometheus metrics endpoint (exposes prom-client registry)
+import { metricsRegistry, metricsContentType } from "./telemetry";
+app.get("/metrics", async (req, res) => {
+  try {
+    const metrics = await metricsRegistry.metrics();
+    res.set("Content-Type", metricsContentType);
+    res.send(metrics);
+  } catch (error) {
+    res.status(500).send("Failed to collect metrics");
+  }
 });
 
 // Advanced health check endpoint with monitoring metrics
@@ -154,9 +199,10 @@ io.on("connection", (socket) => {
 
 server.listen(PORT, () => {
   logger.info(`Workers server running on port ${PORT}`);
+  logger.info(`Service role: ${SERVICE_ROLE}, instance: ${INSTANCE_ID}`);
   logger.info(`Advanced workflow monitoring enabled`);
   logger.info(
-    `Environment: ${process.env.NODE_ENV ?? "development"}, log level: ${process.env.LOG_LEVEL ?? "info"}`,
+    `Environment: ${NODE_ENV}, log level: ${process.env.LOG_LEVEL ?? "info"}`,
   );
 });
 
