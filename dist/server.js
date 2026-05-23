@@ -100,14 +100,14 @@ app.get("/health", (req, res) => {
 });
 // Prometheus metrics endpoint (exposes prom-client registry)
 const telemetry_1 = require("./telemetry");
-app.get('/metrics', async (req, res) => {
+app.get("/metrics", async (req, res) => {
     try {
         const metrics = await telemetry_1.metricsRegistry.metrics();
-        res.set('Content-Type', telemetry_1.metricsContentType);
+        res.set("Content-Type", telemetry_1.metricsContentType);
         res.send(metrics);
     }
     catch (error) {
-        res.status(500).send('Failed to collect metrics');
+        res.status(500).send("Failed to collect metrics");
     }
 });
 // Advanced health check endpoint with monitoring metrics

@@ -190,7 +190,7 @@ class DatabaseQueue {
                 await (0, bullQueue_1.addBullJob)(jobId, jobData, { priority: options.priority || 1 });
             }
             catch (e) {
-                console.error('Failed to add job to Bull queue', e);
+                console.error("Failed to add job to Bull queue", e);
             }
         }
         return { id: jobId };

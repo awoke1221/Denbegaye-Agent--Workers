@@ -41,15 +41,15 @@ const bullmq_1 = require("bullmq");
 const logger_1 = require("./logger");
 const queueMetrics_1 = require("./queueMetrics");
 const REDIS_URL = process.env.REDIS_URL;
-const QUEUE_NAME = process.env.BULL_QUEUE_NAME || 'agent-execution-queue';
-const CONCURRENCY = Number(process.env.WORKER_CONCURRENCY || '4');
+const QUEUE_NAME = process.env.BULL_QUEUE_NAME || "agent-execution-queue";
+const CONCURRENCY = Number(process.env.WORKER_CONCURRENCY || "4");
 let queue = null;
 let worker = null;
 let scheduler = null;
 let queueEvents = null;
 async function initBullQueue() {
     if (!REDIS_URL) {
-        logger_1.logger.info('BULL: REDIS_URL not set — skipping Bull initialization');
+        logger_1.logger.info("BULL: REDIS_URL not set — skipping Bull initialization");
         return;
     }
     const redisOpts = { url: REDIS_URL };
@@ -57,44 +57,53 @@ async function initBullQueue() {
     scheduler = new bullmq_1.JobScheduler(QUEUE_NAME, { connection: redisOpts });
     queueEvents = new bullmq_1.QueueEvents(QUEUE_NAME, { connection: redisOpts });
     // Graceful event listeners
-    queue.on('error', (err) => logger_1.logger.error('Bull queue error', { err }));
+    queue.on("error", (err) => logger_1.logger.error("Bull queue error", { err }));
     if (queueEvents) {
         await queueEvents.waitUntilReady();
-        queueEvents.on('waiting', async ({ jobId }) => {
-            logger_1.logger.debug('Bull job waiting', { jobId });
+        queueEvents.on("waiting", async ({ jobId }) => {
+            logger_1.logger.debug("Bull job waiting", { jobId });
             await (0, queueMetrics_1.refreshBullQueueMetrics)(QUEUE_NAME, queue);
         });
-        queueEvents.on('active', async ({ jobId }) => {
-            logger_1.logger.info('Bull job active', { jobId });
+        queueEvents.on("active", async ({ jobId }) => {
+            logger_1.logger.info("Bull job active", { jobId });
             await (0, queueMetrics_1.refreshBullQueueMetrics)(QUEUE_NAME, queue);
         });
-        queueEvents.on('completed', async ({ jobId }) => {
-            logger_1.logger.info('Bull job completed', { jobId });
-            queueMetrics_1.bullJobsCompletedTotal.labels(QUEUE_NAME, process.env.INSTANCE_ID || 'unknown').inc();
+        queueEvents.on("completed", async ({ jobId }) => {
+            logger_1.logger.info("Bull job completed", { jobId });
+            queueMetrics_1.bullJobsCompletedTotal
+                .labels(QUEUE_NAME, process.env.INSTANCE_ID || "unknown")
+                .inc();
             await (0, queueMetrics_1.refreshBullQueueMetrics)(QUEUE_NAME, queue);
         });
-        queueEvents.on('failed', async ({ jobId, failedReason }) => {
-            logger_1.logger.error('Bull job failed', { jobId, failedReason });
-            queueMetrics_1.bullJobsFailedTotal.labels(QUEUE_NAME, process.env.INSTANCE_ID || 'unknown').inc();
+        queueEvents.on("failed", async ({ jobId, failedReason }) => {
+            logger_1.logger.error("Bull job failed", { jobId, failedReason });
+            queueMetrics_1.bullJobsFailedTotal
+                .labels(QUEUE_NAME, process.env.INSTANCE_ID || "unknown")
+                .inc();
             await (0, queueMetrics_1.refreshBullQueueMetrics)(QUEUE_NAME, queue);
         });
     }
-    logger_1.logger.info('Bull queue initialized', { queue: QUEUE_NAME });
+    logger_1.logger.info("Bull queue initialized", { queue: QUEUE_NAME });
     await (0, queueMetrics_1.refreshBullQueueMetrics)(QUEUE_NAME, queue);
 }
 async function addBullJob(jobId, payload, opts = {}) {
     if (!queue) {
-        logger_1.logger.warn('BULL: queue not initialized, cannot add job');
+        logger_1.logger.warn("BULL: queue not initialized, cannot add job");
         return null;
     }
-    const job = await queue.add({ jobId, ...payload }, { removeOnComplete: true, attempts: 3, backoff: { type: 'exponential', delay: 1000 }, ...opts });
-    logger_1.logger.info('Bull job added', { jobId: job.id });
+    const job = await queue.add({ jobId, ...payload }, {
+        removeOnComplete: true,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 1000 },
+        ...opts,
+    });
+    logger_1.logger.info("Bull job added", { jobId: job.id });
     await (0, queueMetrics_1.refreshBullQueueMetrics)(QUEUE_NAME, queue);
     return job.id;
 }
 async function startBullWorker() {
     if (!REDIS_URL) {
-        logger_1.logger.info('BULL: REDIS_URL not set — skipping worker startup');
+        logger_1.logger.info("BULL: REDIS_URL not set — skipping worker startup");
         return;
     }
     if (!queue)
@@ -103,31 +112,33 @@ async function startBullWorker() {
         return;
     worker = new bullmq_1.Worker(QUEUE_NAME, async (job) => {
         const { jobId, ...payload } = job.data;
-        logger_1.logger.info('Bull worker processing job', { jobId, id: job.id });
-        const timer = queueMetrics_1.bullJobProcessingDuration.labels(QUEUE_NAME, process.env.INSTANCE_ID || 'unknown').startTimer();
+        logger_1.logger.info("Bull worker processing job", { jobId, id: job.id });
+        const timer = queueMetrics_1.bullJobProcessingDuration
+            .labels(QUEUE_NAME, process.env.INSTANCE_ID || "unknown")
+            .startTimer();
         try {
             // dynamic import to avoid circular dependency at module init
-            const mod = await Promise.resolve().then(() => __importStar(require('./agentQueue')));
+            const mod = await Promise.resolve().then(() => __importStar(require("./agentQueue")));
             const fn = mod.processJobFunction;
             if (!fn)
-                throw new Error('processJobFunction not available');
+                throw new Error("processJobFunction not available");
             await fn(payload, jobId);
         }
         catch (e) {
-            logger_1.logger.error('Bull worker failed executing job', { err: e });
+            logger_1.logger.error("Bull worker failed executing job", { err: e });
             throw e;
         }
         finally {
             timer();
         }
     }, { connection: { url: REDIS_URL }, concurrency: CONCURRENCY });
-    worker.on('completed', (job) => {
-        logger_1.logger.info('Bull job completed', { jobId: job.id });
+    worker.on("completed", (job) => {
+        logger_1.logger.info("Bull job completed", { jobId: job.id });
     });
-    worker.on('failed', (job, err) => {
-        logger_1.logger.error('Bull job failed', { jobId: job?.id, err });
+    worker.on("failed", (job, err) => {
+        logger_1.logger.error("Bull job failed", { jobId: job?.id, err });
     });
-    logger_1.logger.info('Bull worker started', { concurrency: CONCURRENCY });
+    logger_1.logger.info("Bull worker started", { concurrency: CONCURRENCY });
 }
 async function closeBull() {
     try {
@@ -136,6 +147,6 @@ async function closeBull() {
         await queue?.close();
     }
     catch (e) {
-        logger_1.logger.warn('Error closing Bull resources', { e });
+        logger_1.logger.warn("Error closing Bull resources", { e });
     }
 }
