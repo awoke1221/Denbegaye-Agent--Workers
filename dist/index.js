@@ -7,7 +7,8 @@ exports.initializeQueue = void 0;
 const dotenv_1 = __importDefault(require("dotenv"));
 const logger_1 = require("./utils/logger");
 const agentQueue_1 = require("./utils/agentQueue");
-dotenv_1.default.config({ path: ".env.local" });
+const envPath = process.env.NODE_ENV === "production" ? ".env" : ".env.local";
+dotenv_1.default.config({ path: envPath });
 const initializeQueue = async () => {
     await agentQueue_1.agentQueue.start();
     logger_1.logger.info("Agent execution queue initialized.");

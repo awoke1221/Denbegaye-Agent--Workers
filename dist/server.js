@@ -17,7 +17,8 @@ const routes_1 = require("./routes");
 const webhook_1 = require("./nodes/triggers/webhook");
 const workflowMonitoring_1 = require("./utils/workflowMonitoring");
 // Load environment variables
-dotenv_1.default.config({ path: ".env.local" });
+const envPath = process.env.NODE_ENV === "production" ? ".env" : ".env.local";
+dotenv_1.default.config({ path: envPath });
 const app = (0, express_1.default)();
 const server = (0, http_1.createServer)(app);
 const io = new socket_io_1.Server(server, {
@@ -134,5 +135,6 @@ io.on("connection", (socket) => {
 server.listen(PORT, () => {
     logger_1.logger.info(`Workers server running on port ${PORT}`);
     logger_1.logger.info(`Advanced workflow monitoring enabled`);
+    logger_1.logger.info(`Environment: ${process.env.NODE_ENV ?? "development"}, log level: ${process.env.LOG_LEVEL ?? "info"}`);
 });
 exports.default = app;
