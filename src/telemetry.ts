@@ -67,17 +67,19 @@ async function initializeTelemetry() {
     instrumentations: [getNodeAutoInstrumentations()],
   };
 
-  if (traceExporter) {
-    sdkConfig.traceExporter = traceExporter;
+  if (!traceExporter) {
+    console.info(
+      "OpenTelemetry disabled because no OTLP exporter is configured.",
+    );
+    return;
   }
 
+  sdkConfig.traceExporter = traceExporter;
   const sdk = new NodeSDK(sdkConfig);
 
   try {
     await sdk.start();
-    console.info(
-      `OpenTelemetry initialized${traceExporter ? "" : " (no OTLP exporter configured)"}`,
-    );
+    console.info("OpenTelemetry initialized");
   } catch (err: unknown) {
     console.error("OpenTelemetry failed to start", err);
   }
