@@ -102,11 +102,11 @@ export async function rotateApiKey(
     await supabase
       .from("api_keys_vault")
       .update({ description: "deprecated" })
-      .neq("id", data?.id)
+      .neq("id", data?.[0]?.id)
       .eq("user_id", userId)
       .eq("provider", provider);
 
-    return data?.id;
+    return data?.[0]?.id;
   } catch (err) {
     logger.error("rotateApiKey error", { err });
     throw err;

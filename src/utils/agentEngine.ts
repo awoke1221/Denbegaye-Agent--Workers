@@ -542,6 +542,8 @@ export class AdvancedWorkflowExecutor {
     if (nodeDefinition) {
       const result = await nodeDefinition.handler({
         nodeId: node.id,
+        type: node.type,
+        nodeType: node.type,
         input: variables,
         variables: { ...variables },
         apiKeys,

@@ -16,7 +16,7 @@ async function testJobExecution() {
           type: "ai-gemini",
           config: {
             apiKey: "test-key",
-            model: "gemini-pro",
+            model: "gemini-1.5-pro",
             prompt: "Hello",
           },
         },
@@ -49,7 +49,7 @@ async function testJobExecution() {
             type: "ai-gemini",
             config: {
               apiKey: "test-key",
-              model: "gemini-pro",
+              model: "gemini-1.5-pro",
               prompt: "Hello",
             },
           },

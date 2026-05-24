@@ -2009,7 +2009,71 @@ export const reactAgentHandler = async (context: any) => {
     const prompt = `${promptHistory.join("\n\n")}\n\nRespond with a JSON object only with keys: thought, action, actionInput, finalAnswer. If no final answer yet set finalAnswer to null.`;
 
     try {
-      const res = await llm.invoke([new HumanMessage(prompt)]);
+      const maxLLMRetries = Number(process.env.LLM_RETRY_MAX ?? 2);
+      const baseTimeoutMs = Number(process.env.LLM_INVOKE_TIMEOUT_MS ?? 45000);
+      const invokeTimeoutMs =
+        provider === "gemini" ? Math.max(baseTimeoutMs, 120000) : baseTimeoutMs;
+      let res: any = null;
+
+      for (let attempt = 0; attempt <= maxLLMRetries; attempt++) {
+        try {
+          res = await llm.invoke([new HumanMessage(prompt)], {
+            timeout: invokeTimeoutMs,
+          } as any);
+          break;
+        } catch (e: any) {
+          const errStr = String(e?.message || e || "");
+          const rateLimited =
+            /429|Too Many Requests|Too Many Req|rate limit|RateLimit/i.test(
+              errStr,
+            );
+          const timedOut =
+            /LLM invoke timeout|timed out|timeout|ETIMEDOUT|ESOCKETTIMEDOUT/i.test(
+              errStr,
+            );
+          const serverError =
+            /5\d\d|Service Unavailable|Gateway Timeout|Bad Gateway/i.test(
+              errStr,
+            );
+          const shouldRetry =
+            (rateLimited || timedOut || serverError) && attempt < maxLLMRetries;
+          const backoffMs = Math.min(2 ** attempt * 1000, 30000); // 1s,2s,... up to 30s
+
+          if (typeof context.emitEvent === "function") {
+            try {
+              context.emitEvent({
+                type: "llm-retry",
+                nodeId: context.nodeId,
+                attempt: attempt + 1,
+                provider: provider || "unknown",
+                reason: rateLimited
+                  ? "rate-limited"
+                  : timedOut
+                    ? "timeout"
+                    : serverError
+                      ? "server-error"
+                      : "error",
+                message: errStr.slice(0, 300),
+                nextBackoffMs: shouldRetry ? backoffMs : 0,
+              });
+            } catch {}
+          }
+
+          if (shouldRetry) {
+            try {
+              await new Promise((r) => setTimeout(r, backoffMs));
+            } catch {}
+            continue;
+          }
+
+          throw e;
+        }
+      }
+
+      if (!res) {
+        throw new Error("LLM did not return a response after retries");
+      }
+
       const text = String(res.content || "").trim();
 
       lastRawResponse = text;

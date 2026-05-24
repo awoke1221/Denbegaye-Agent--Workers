@@ -1,4 +1,4 @@
-import Redis from "ioredis";
+import Redis, { Cluster } from "ioredis";
 import { initBullQueue, addBullJob, startBullWorker } from "./bullQueue";
 import {
   createRedisConnection,
@@ -20,7 +20,7 @@ import {
 } from "../config";
 
 const REDIS_QUEUE_KEY = "agent_execution_queue";
-let redisClient: Redis | null = null;
+let redisClient: Redis | Cluster | null = null;
 let redisConnected = false;
 let redisReconnectAttempt = 0;
 

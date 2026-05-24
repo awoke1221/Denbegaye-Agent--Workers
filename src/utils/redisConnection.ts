@@ -1,4 +1,4 @@
-import Redis, { ClusterNode, RedisOptions } from "ioredis";
+import Redis, { Cluster, ClusterNode, RedisOptions } from "ioredis";
 import {
   REDIS_URL,
   REDIS_CLUSTER_NODES,
@@ -64,7 +64,7 @@ export const createRedisConnection = () => {
 };
 
 export const attachRedisEventHandlers = (
-  client: Redis.Redis | Redis.Cluster,
+  client: Redis | Cluster,
   name: string,
 ) => {
   client.on("connect", () => {
@@ -75,7 +75,7 @@ export const attachRedisEventHandlers = (
     logger.info(`${name}: Redis connection ready`);
   });
 
-  client.on("error", (error) => {
+  client.on("error", (error: Error) => {
     logger.error(`${name}: Redis error`, { error });
   });
 

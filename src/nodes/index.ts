@@ -48,6 +48,7 @@ const normalizeModelForProvider = (
   if (normalizedProvider === "gemini") {
     if (!value) return "gemini-2.5-flash";
     if (value === "gemini-2.0-flash") return "gemini-2.5-flash";
+    if (value === "gemini-pro") return "gemini-1.5-pro";
     return value;
   }
 
@@ -1036,7 +1037,7 @@ const denbegayeAgentHandler = async (context: any) => {
 
       const genAI = new GoogleGenerativeAI(apiKey);
       geminiModel = genAI.getGenerativeModel({
-        model: model || "gemini-pro",
+        model: model || "gemini-2.5-flash",
         generationConfig: {
           temperature: context.config?.temperature ?? 0.7,
           maxOutputTokens: context.config?.maxTokens ?? 1500,

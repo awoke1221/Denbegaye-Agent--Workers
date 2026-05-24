@@ -40,7 +40,8 @@ exports.closeBull = closeBull;
 const bullmq_1 = require("bullmq");
 const logger_1 = require("./logger");
 const queueMetrics_1 = require("./queueMetrics");
-const REDIS_URL = process.env.REDIS_URL;
+const redisConnection_1 = require("./redisConnection");
+const config_1 = require("../config");
 const QUEUE_NAME = process.env.BULL_QUEUE_NAME || "agent-execution-queue";
 const CONCURRENCY = Number(process.env.WORKER_CONCURRENCY || "4");
 let queue = null;
@@ -48,14 +49,22 @@ let worker = null;
 let scheduler = null;
 let queueEvents = null;
 async function initBullQueue() {
-    if (!REDIS_URL) {
-        logger_1.logger.info("BULL: REDIS_URL not set — skipping Bull initialization");
+    let redisConnection;
+    try {
+        redisConnection = (0, redisConnection_1.createRedisConnection)();
+        (0, redisConnection_1.attachRedisEventHandlers)(redisConnection, "BullQueue");
+    }
+    catch (error) {
+        logger_1.logger.info("BULL: Redis connection could not be created — skipping Bull initialization", { error });
         return;
     }
-    const redisOpts = { url: REDIS_URL };
-    queue = new bullmq_1.Queue(QUEUE_NAME, { connection: redisOpts });
-    scheduler = new bullmq_1.JobScheduler(QUEUE_NAME, { connection: redisOpts });
-    queueEvents = new bullmq_1.QueueEvents(QUEUE_NAME, { connection: redisOpts });
+    queue = new bullmq_1.Queue(QUEUE_NAME, { connection: redisConnection });
+    scheduler = new bullmq_1.JobScheduler(QUEUE_NAME, {
+        connection: redisConnection,
+    });
+    queueEvents = new bullmq_1.QueueEvents(QUEUE_NAME, {
+        connection: redisConnection,
+    });
     // Graceful event listeners
     queue.on("error", (err) => logger_1.logger.error("Bull queue error", { err }));
     if (queueEvents) {
@@ -102,7 +111,7 @@ async function addBullJob(jobId, payload, opts = {}) {
     return job.id;
 }
 async function startBullWorker() {
-    if (!REDIS_URL) {
+    if (!config_1.REDIS_URL) {
         logger_1.logger.info("BULL: REDIS_URL not set — skipping worker startup");
         return;
     }
@@ -131,7 +140,7 @@ async function startBullWorker() {
         finally {
             timer();
         }
-    }, { connection: { url: REDIS_URL }, concurrency: CONCURRENCY });
+    }, { connection: { url: config_1.REDIS_URL }, concurrency: CONCURRENCY });
     worker.on("completed", (job) => {
         logger_1.logger.info("Bull job completed", { jobId: job.id });
     });

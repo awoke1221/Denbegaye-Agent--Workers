@@ -10,6 +10,7 @@ const express_1 = require("express");
 const supabaseClient_1 = require("../utils/supabaseClient");
 const validation_1 = require("../utils/validation");
 const logger_1 = require("../utils/logger");
+const rateLimiting_1 = require("../utils/rateLimiting");
 const streamingExecutionEngine_1 = require("../utils/streamingExecutionEngine");
 const socket_1 = require("../utils/socket");
 function createLangGraphRoutes(io) {
@@ -29,6 +30,16 @@ function createLangGraphRoutes(io) {
             if (authError || !user) {
                 return res.status(401).json({ error: "Invalid token" });
             }
+            const rateCheck = await (0, rateLimiting_1.checkRateLimit)(user.id, "api_calls");
+            if (!rateCheck.allowed) {
+                return res.status(429).json({
+                    error: "Rate limit exceeded",
+                    current: rateCheck.current,
+                    limit: rateCheck.limit,
+                    resetTime: rateCheck.resetTime,
+                });
+            }
+            await (0, rateLimiting_1.incrementUsage)(user.id, "api_calls", 1);
             const { agentId, nodes, edges, input, apiKeys, agentName, enableStreaming = true, } = req.body;
             // Validate workflow graph
             const graphValidation = (0, validation_1.validateAgentGraph)(nodes, edges);

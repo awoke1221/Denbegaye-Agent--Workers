@@ -435,8 +435,13 @@ class AdvancedWorkflowBuilder {
             });
             try {
                 const invokePromise = compiler.invoke(initialState);
-                // Add 30-second timeout for workflow execution
-                const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Workflow execution timeout after 30s")), 30000));
+                // Add configurable timeout for workflow execution (default 120s)
+                const timeoutMsEnv = process.env.REACT_LANGGRAPH_TIMEOUT_MS ||
+                    process.env.LANGGRAPH_TIMEOUT_MS;
+                const timeoutMs = Number.isFinite(Number(timeoutMsEnv))
+                    ? Math.max(1000, Number(timeoutMsEnv))
+                    : 120000;
+                const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error(`Workflow execution timeout after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs));
                 finalState = await Promise.race([invokePromise, timeoutPromise]);
             }
             catch (executionError) {

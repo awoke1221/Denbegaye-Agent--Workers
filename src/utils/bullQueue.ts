@@ -13,6 +13,7 @@ import {
   createRedisConnection,
   attachRedisEventHandlers,
 } from "./redisConnection";
+import { REDIS_URL } from "../config";
 
 const QUEUE_NAME = process.env.BULL_QUEUE_NAME || "agent-execution-queue";
 const CONCURRENCY = Number(process.env.WORKER_CONCURRENCY || "4");

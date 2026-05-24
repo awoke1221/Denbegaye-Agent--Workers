@@ -17,6 +17,8 @@ const socket_1 = require("./utils/socket");
 const routes_1 = require("./routes");
 const webhook_1 = require("./nodes/triggers/webhook");
 const workflowMonitoring_1 = require("./utils/workflowMonitoring");
+const globalRateLimit_1 = require("./utils/globalRateLimit");
+const perUserRateLimit_1 = require("./utils/perUserRateLimit");
 const config_1 = require("./config");
 require("./telemetry");
 const app = (0, express_1.default)();
@@ -89,6 +91,10 @@ app.use((0, helmet_1.default)());
 app.use((0, cors_1.default)());
 app.use(express_1.default.json({ limit: "10mb" }));
 app.use(express_1.default.urlencoded({ extended: true }));
+// Global IP-based rate limiter (Redis-backed). Skips health/metrics endpoints.
+app.use(globalRateLimit_1.globalRateLimit);
+// Per-user rate limiter (daily/monthly quotas). Extracts user ID from JWT.
+app.use(perUserRateLimit_1.perUserRateLimit);
 // Health check endpoint
 app.get("/health", (req, res) => {
     res.json({

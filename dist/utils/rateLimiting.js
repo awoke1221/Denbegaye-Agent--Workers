@@ -50,7 +50,14 @@ async function getUserLimits(userId) {
 async function checkRateLimit(userId, metricType) {
     try {
         const limits = await getUserLimits(userId);
-        const limit = limits[metricType.replace("_", "")];
+        const metricKeyMap = {
+            agent_creations: "agents",
+            executions: "executions",
+            api_calls: "api_calls",
+            storage_mb: "storage_mb",
+        };
+        const metricKey = metricKeyMap[metricType];
+        const limit = limits[metricKey] ?? 0;
         // Get current usage for this month
         const now = new Date();
         const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);

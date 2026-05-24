@@ -38,7 +38,7 @@ class LLMFactory {
             case "gemini":
                 llm = new google_genai_1.ChatGoogleGenerativeAI({
                     apiKey: config.apiKey,
-                    model: config.model || "gemini-pro",
+                    model: config.model || "gemini-2.5-flash",
                     temperature: config.temperature ?? 0.7,
                     maxOutputTokens: config.maxTokens,
                     streaming: config.streaming ?? false,

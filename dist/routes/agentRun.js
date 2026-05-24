@@ -6,6 +6,7 @@ const encryption_1 = require("../utils/encryption");
 const validation_1 = require("../utils/validation");
 const agentQueue_1 = require("../utils/agentQueue");
 const logger_1 = require("../utils/logger");
+const rateLimiting_1 = require("../utils/rateLimiting");
 const crypto_1 = require("crypto");
 // Status transition validation
 const VALID_STATUS_TRANSITIONS = {
@@ -30,6 +31,16 @@ const agentRunHandler = async (req, res) => {
         if (error || !user) {
             return res.status(401).json({ error: "Invalid token" });
         }
+        const rateCheck = await (0, rateLimiting_1.checkRateLimit)(user.id, "api_calls");
+        if (!rateCheck.allowed) {
+            return res.status(429).json({
+                error: "Rate limit exceeded",
+                current: rateCheck.current,
+                limit: rateCheck.limit,
+                resetTime: rateCheck.resetTime,
+            });
+        }
+        await (0, rateLimiting_1.incrementUsage)(user.id, "api_calls", 1);
         const userId = user.id;
         const body = req.body;
         const normalizedBody = {

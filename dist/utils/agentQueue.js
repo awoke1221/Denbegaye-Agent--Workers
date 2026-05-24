@@ -1,13 +1,10 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.QueueManager = exports.deadLetterQueue = exports.agentQueue = exports.agentRunSchema = void 0;
 exports.reserveAgentQueueJob = reserveAgentQueueJob;
 exports.processJobFunction = processJobFunction;
-const ioredis_1 = __importDefault(require("ioredis"));
 const bullQueue_1 = require("./bullQueue");
+const redisConnection_1 = require("./redisConnection");
 const zod_1 = require("zod");
 const supabaseClient_1 = require("./supabaseClient");
 const encryption_1 = require("./encryption");
@@ -16,16 +13,20 @@ const socket_1 = require("./socket");
 const logger_1 = require("./logger");
 const validation_1 = require("./validation");
 const config_1 = require("../config");
-const REDIS_URL = process.env.REDIS_URL;
 const REDIS_QUEUE_KEY = "agent_execution_queue";
 let redisClient = null;
 let redisConnected = false;
 let redisReconnectAttempt = 0;
-if (REDIS_URL) {
-    redisClient = new ioredis_1.default(REDIS_URL);
-    redisClient.on("connect", () => {
-        console.info("Redis client connecting...");
+try {
+    redisClient = (0, redisConnection_1.createRedisConnection)();
+    (0, redisConnection_1.attachRedisEventHandlers)(redisClient, "AgentQueue");
+}
+catch (error) {
+    console.warn("Redis queue disabled because connection could not be created", {
+        error,
     });
+}
+if (redisClient) {
     redisClient.on("ready", () => {
         if (!redisConnected) {
             console.info(`Redis queue reconnected after ${redisReconnectAttempt} attempt${redisReconnectAttempt === 1 ? "" : "s"}`);
