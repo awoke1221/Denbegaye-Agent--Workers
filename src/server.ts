@@ -12,6 +12,8 @@ import { emitSocketEvent } from "./utils/socket";
 import { setupRoutes } from "./routes";
 import { WebhookHandler } from "./nodes/triggers/webhook";
 import { workflowMonitoring } from "./utils/workflowMonitoring";
+import { globalRateLimit } from "./utils/globalRateLimit";
+import { perUserRateLimit } from "./utils/perUserRateLimit";
 import {
   SERVICE_ROLE,
   INSTANCE_ID,
@@ -111,6 +113,10 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
+// Global IP-based rate limiter (Redis-backed). Skips health/metrics endpoints.
+app.use(globalRateLimit);
+// Per-user rate limiter (daily/monthly quotas). Extracts user ID from JWT.
+app.use(perUserRateLimit);
 
 // Health check endpoint
 app.get("/health", (req, res) => {

@@ -73,9 +73,15 @@ export async function checkRateLimit(
 }> {
   try {
     const limits = await getUserLimits(userId);
-    const limit = limits[
-      metricType.replace("_", "") as keyof UserLimits
-    ] as number;
+    const metricKeyMap: Record<RateLimit["metric_type"], keyof UserLimits> = {
+      agent_creations: "agents",
+      executions: "executions",
+      api_calls: "api_calls",
+      storage_mb: "storage_mb",
+    };
+
+    const metricKey = metricKeyMap[metricType];
+    const limit = limits[metricKey] ?? 0;
 
     // Get current usage for this month
     const now = new Date();
