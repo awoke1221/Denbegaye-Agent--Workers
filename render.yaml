@@ -1,0 +1,100 @@
+# Render deployment blueprint for Denbegaye Agent Workers
+# This file defines a dedicated API web service, a background worker service,
+# and a managed Redis service to support queueing and Socket.IO adapter state.
+
+services:
+  - type: web_service
+    name: denbegaye-agent-api
+    env: node
+    plan: starter
+    branch: main
+    buildCommand: npm install && npm run build
+    startCommand: npm run start:api
+    healthCheckPath: /health
+    autoDeploy: true
+    instanceCount: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SERVICE_ROLE
+        value: api
+      - key: FRONTEND_URL
+        value: "https://your-frontend-domain.com"
+      - key: REDIS_URL
+        fromService:
+          kind: redis
+          name: denbegaye-agent-redis
+      - key: SUPABASE_URL
+        value: ""
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        value: ""
+      - key: ENCRYPTION_KEY
+        value: ""
+      - key: OPENAI_API_KEY
+        value: ""
+      - key: GEMINI_API_KEY
+        value: ""
+      - key: DEEPSEEK_API_KEY
+        value: ""
+      - key: SMTP_HOST
+        value: ""
+      - key: SMTP_PORT
+        value: ""
+      - key: SMTP_USER
+        value: ""
+      - key: SMTP_PASS
+        value: ""
+      - key: EMAIL_FROM
+        value: ""
+
+  - type: background_worker
+    name: denbegaye-agent-worker
+    env: node
+    plan: starter
+    branch: main
+    buildCommand: npm install && npm run build
+    startCommand: npm run start:worker
+    autoDeploy: true
+    instanceCount: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SERVICE_ROLE
+        value: worker
+      - key: REDIS_URL
+        fromService:
+          kind: redis
+          name: denbegaye-agent-redis
+      - key: SUPABASE_URL
+        value: ""
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        value: ""
+      - key: ENCRYPTION_KEY
+        value: ""
+      - key: OPENAI_API_KEY
+        value: ""
+      - key: GEMINI_API_KEY
+        value: ""
+      - key: DEEPSEEK_API_KEY
+        value: ""
+      - key: SMTP_HOST
+        value: ""
+      - key: SMTP_PORT
+        value: ""
+      - key: SMTP_USER
+        value: ""
+      - key: SMTP_PASS
+        value: ""
+      - key: EMAIL_FROM
+        value: ""
+    dependsOn:
+      - name: denbegaye-agent-api
+        type: web_service
+
+  - type: redis
+    name: denbegaye-agent-redis
+    plan: starter
+    branch: main
+    env: node
+    # Redis service will automatically expose its connection URL to the app.
+    # The API and worker services above reference it via REDIS_URL.
