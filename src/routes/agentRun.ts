@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { supabase } from "../utils/supabaseClient";
+import { getUserFromRequest } from "../utils/requestAuth";
 import { encryptValue } from "../utils/encryption";
 import {
   validateAgentGraph,
@@ -29,21 +30,9 @@ function isValidStatusTransition(
 
 export const agentRunHandler = async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
-    const token = authHeader.substring(7);
-
-    // Verify the JWT token with Supabase
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser(token);
-
+    const { user, error } = await getUserFromRequest(req);
     if (error || !user) {
-      return res.status(401).json({ error: "Invalid token" });
+      return res.status(401).json({ error: "Invalid or missing token" });
     }
 
     const rateCheck = await checkRateLimit(user.id, "api_calls");

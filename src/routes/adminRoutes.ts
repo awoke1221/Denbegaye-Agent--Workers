@@ -1,5 +1,6 @@
 import { Express, Request, Response, NextFunction } from "express";
 import { supabase } from "../utils/supabaseClient";
+import { getUserFromRequest } from "../utils/requestAuth";
 
 interface AdminRequest extends Request {
   user?: any;
@@ -24,19 +25,9 @@ export const adminOnly = async (
   res: Response,
   next: NextFunction,
 ) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith("Bearer ")) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
-  const token = authHeader.substring(7);
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser(token);
-
+  const { user, error } = await getUserFromRequest(req);
   if (error || !user) {
-    return res.status(401).json({ error: "Invalid token" });
+    return res.status(401).json({ error: "Invalid or missing token" });
   }
 
   const { data: profile, error: profileError } = await supabase

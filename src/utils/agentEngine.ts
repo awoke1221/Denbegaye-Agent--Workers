@@ -21,6 +21,7 @@ interface WorkflowExecutionContext {
   stopOnFailure: boolean;
   circuitBreakerThreshold: number;
   executionTimeout: number;
+  edges?: any[];
 }
 
 interface NodeExecutionState {
@@ -540,14 +541,66 @@ export class AdvancedWorkflowExecutor {
     const nodeDefinition = nodeRegistry.get(node.type);
 
     if (nodeDefinition) {
+      // Resolve previous node output from variables (stored keyed by node ID)
+      const edges = this.context.edges || [];
+      const incomingEdges =
+        (edges as any[])?.filter((e: any) => (e.target || e.to) === node.id) ||
+        [];
+      let previousOutput: any = {};
+      if (incomingEdges.length === 1) {
+        const parentId = incomingEdges[0].source || incomingEdges[0].from;
+        previousOutput =
+          variables[parentId]?.output || variables[parentId] || {};
+      } else if (incomingEdges.length > 1) {
+        previousOutput = incomingEdges.reduce((acc: any, edge: any) => {
+          const parentId = edge.source || edge.from;
+          const parentResult = variables[parentId];
+          const parentOutput = parentResult?.output || parentResult || {};
+          return { ...acc, ...parentOutput };
+        }, {});
+      }
+
+      // Interpolate {{variables}} and {{nodeId.field}} in config
+      const interpolateConfig = (cfg: any): any => {
+        if (!cfg || typeof cfg !== "object") return cfg;
+        if (typeof cfg === "string") {
+          return cfg.replace(
+            /\{\{([^}]+)\}\}/g,
+            (match: string, path: string) => {
+              const trimmed = path.trim();
+              if (trimmed.startsWith("variables.")) {
+                const key = trimmed.replace("variables.", "");
+                const val = key
+                  .split(".")
+                  .reduce((o: any, k: string) => o?.[k], variables);
+                return val !== undefined ? String(val) : match;
+              }
+              const parts = trimmed.split(".");
+              let resolved: any = variables;
+              for (const part of parts) {
+                resolved = resolved?.[part];
+                if (resolved === undefined) return match;
+              }
+              return resolved !== undefined ? String(resolved) : match;
+            },
+          );
+        }
+        if (Array.isArray(cfg)) return cfg.map(interpolateConfig);
+        return Object.fromEntries(
+          Object.entries(cfg).map(([k, v]) => [k, interpolateConfig(v)]),
+        );
+      };
+      const resolvedConfig = interpolateConfig(node.config || {});
+
       const result = await nodeDefinition.handler({
         nodeId: node.id,
         type: node.type,
         nodeType: node.type,
-        input: variables,
+        input: previousOutput,
+        previousOutputs: { ...variables },
         variables: { ...variables },
         apiKeys,
-        config: node.config || {},
+        config: resolvedConfig,
         validation: nodeDefinition.validation,
         agentId: this.context.agentId,
         userId: this.context.userId,
@@ -1003,6 +1056,7 @@ export async function executeWorkflow(
         stopOnFailure: true,
         circuitBreakerThreshold: 5,
         executionTimeout: 300000, // 5 minutes
+        edges,
       });
 
       result = await advancedExecutor.executeWorkflow(

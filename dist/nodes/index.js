@@ -59,6 +59,29 @@ const sanitizeExpression = (expression) => {
     const match = text.match(/^\{\{(.+)\}\}$/);
     return match ? match[1].trim() : text;
 };
+// Check whether an expression is a simple path (dot or bracket notation)
+const isSimplePath = (s) => {
+    if (!s || typeof s !== "string")
+        return false;
+    // allow: node-1.output.field, input.user.name, previousOutputs['node-1'].output[0]
+    const simplePathRegex = /^[A-Za-z0-9_\-]+(?:(?:\.[A-Za-z0-9_\-]+)|(?:\[['"][^'\"]+['"]\])|(?:\[\d+\]))*$/;
+    return simplePathRegex.test(s.trim());
+};
+const safeGet = (obj, path) => {
+    if (obj === undefined || obj === null)
+        return undefined;
+    // Convert bracket notation to dot segments: ['a'] -> .a
+    const normalized = String(path).replace(/\[['"]([^'\"]+)['"]\]/g, '.$1');
+    const parts = normalized.split('.').filter(Boolean);
+    let cur = obj;
+    for (const p of parts) {
+        if (cur === undefined || cur === null)
+            return undefined;
+        // If property exists directly, use it; otherwise return undefined
+        cur = cur[p];
+    }
+    return cur;
+};
 const buildMemoryScope = (context) => {
     return (context.agentId ||
         context.userId ||
@@ -151,6 +174,35 @@ const evaluateExpression = (expression, context) => {
         return expression;
     }
     const sanitized = sanitizeExpression(expression);
+    // Fast path: if this looks like a simple path (dot/bracket), try safe resolution
+    try {
+        if (isSimplePath(sanitized)) {
+            const roots = {
+                input: context.input,
+                variables: context.variables || {},
+                previousOutputs: context.previousOutputs || {},
+                config: context.config || {},
+            };
+            // If path starts with a known root, resolve from that root
+            const firstSeg = String(sanitized).split(/\.|\[/)[0];
+            if (firstSeg && Object.prototype.hasOwnProperty.call(roots, firstSeg)) {
+                const relPath = sanitized.slice(firstSeg.length + (sanitized[firstSeg.length] === '.' ? 1 : 0));
+                // if relPath is empty, return the root itself
+                const value = relPath ? safeGet(roots[firstSeg], relPath.replace(/^\./, '')) : roots[firstSeg];
+                if (value !== undefined)
+                    return value;
+            }
+            // Otherwise, treat the path as referencing previousOutputs by node id
+            const valueFromPrev = safeGet(context.previousOutputs || {}, sanitized);
+            if (valueFromPrev !== undefined)
+                return valueFromPrev;
+        }
+    }
+    catch (err) {
+        // ignore and fall back to full parser
+        logger_1.logger.debug('Simple path resolution failed, falling back to expr-eval', { nodeId: context.nodeId, error: err instanceof Error ? err.message : String(err) });
+    }
+    // Fallback to expression parsing for complex expressions
     try {
         const parser = new expr_eval_1.Parser();
         const expr = parser.parse(sanitized);
