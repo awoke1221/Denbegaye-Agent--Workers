@@ -1,16 +1,72 @@
-# Denbegaye Agent Workers
+# Denbegaye Agent Workers — Distributed AI Agent Execution Service
 
-A production-ready AI agent execution service built with Node.js, TypeScript, and Bull queue. This service enables the execution of complex AI workflows defined as directed acyclic graphs (DAGs) with support for multiple AI providers, API integrations, and comprehensive audit logging.
+> A production-architected worker service for executing autonomous AI agent workflows as DAGs with support for multiple reasoning strategies, provider integrations, audit logging, and real-time status streaming.
+
+🎥 **[Demo Video](#)** · 🔗 **[Live Demo](#)** · 📐 **[Architecture Diagram](#architecture)**
+
+---
+
+## For Recruiters & Technical Reviewers
+
+This service is built as an independent worker process for enterprise-grade agent execution, not just a simple serverless function.
+
+- **Queue-driven execution** — jobs are enqueued through Redis/BullMQ and processed by dedicated worker instances.
+- **Multi-role deployment** — supports `SERVICE_ROLE=api`, `SERVICE_ROLE=worker`, or `SERVICE_ROLE=all` for full separation of concerns.
+- **Real-time observability** — execution events are emitted over Socket.IO and captured in Supabase audit logs.
+- **Multi-provider AI support** — provider-agnostic execution for OpenAI, Gemini, DeepSeek, plus generic REST actions.
+- **Graph validation and safety** — Zod schema validation combined with secure expression evaluation to prevent injection.
+
+**Two-service architecture:**
+| Service | Role | Stack |
+|---|---|---|
+| `Denbegaye Agent` | UI, workflow builder, auth, API proxy | Next.js 16, React 18, TypeScript, Supabase, Zustand, React Flow, Socket.IO |
+| `Denbegaye Agent Workers` | Distributed execution engine | Node.js, Express, BullMQ, Redis, Zod, OpenTelemetry, Socket.IO |
+
+---
+
+## How the Repositories Work Together
+
+The worker service is designed to receive queued execution requests from the frontend builder and execute them independently.
+
+- `Denbegaye Agent` builds and validates workflows, resolves credentials, and submits execution jobs through the API proxy.
+- `Denbegaye Agent Workers` consumes jobs from Redis/BullMQ, executes workflow DAGs, and persists audit events to Supabase.
+- Execution workflow:
+  1. User submits a workflow from the UI.
+  2. Frontend enqueues the execution request in Redis via the API proxy.
+  3. Worker instances claim jobs and execute nodes sequentially or in parallel.
+  4. Execution events are streamed back for real-time UI updates.
+  5. Final results and audit logs are stored for review.
+
+This separation enables independent scaling of the builder/API layer and the execution engine.
+
+## Deployment Checklist
+
+- ✅ Verify environment configuration for both services (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `BULL_QUEUE_NAME`, `ENCRYPTION_KEY`)
+- ✅ Deploy `Denbegaye Agent` as the frontend/API proxy service
+- ✅ Deploy `Denbegaye Agent Workers` as one or more worker instances
+- ✅ Ensure Redis is accessible by all worker and API processes
+- ✅ Use secure storage for service keys and API credentials
+- ✅ Monitor queue depth, job retries, and worker health
+- ✅ Perform end-to-end execution tests with sample workflow jobs
+
+## Testing Checklist
+
+- ✅ Run unit tests and integration tests with `npm test`
+- ✅ Validate workflow execution through the API proxy and worker service
+- ✅ Confirm real-time status updates over Socket.IO
+- ✅ Test worker retry and failure handling behavior
+- ✅ Verify Supabase audit log entries for executions
+- ✅ Exercise concurrent workflow executions to check queue processing
 
 ## 🚀 Features
 
 - **DAG-based Workflow Execution**: Execute complex agent workflows with dependency management
-- **Multi-Provider AI Support**: OpenAI, Gemini, and DeepSeek integration
-- **Queue-based Processing**: Asynchronous job processing with Bull and Redis
-- **Schema Validation**: Zod-based validation for workflow graphs
-- **Audit Logging**: Comprehensive workflow and node-level audit trails
-- **Error Handling**: Retry logic with exponential backoff and timeout management
-- **Database Integration**: Supabase for execution tracking and audit logs
+- **Multi-provider AI support**: OpenAI, Gemini, DeepSeek, and extensible custom integrations
+- **Queue-based processing**: Asynchronous job processing with BullMQ and Redis
+- **Schema validation**: Zod validation for workflow graphs before execution
+- **Audit logging**: Workflow and node-level audit trails persisted to Supabase
+- **Error handling**: Retry logic, timeouts, and execution resilience
+- **Role-based scaling**: API and worker processes can scale independently
 - **TypeScript**: Full type safety and modern development experience
 
 ## 🛡️ Security
@@ -23,20 +79,21 @@ This service implements secure expression evaluation to prevent code injection a
 
 ## 🏗️ Architecture
 
-### Core Components
+The worker service is designed as an independent, horizontally scalable execution engine with a clear runtime boundary between the frontend API proxy and the worker processes.
 
-- **Worker Service**: Processes agent execution jobs from Redis queue
-- **Agent Engine**: Executes workflow DAGs with node orchestration
-- **Validation Layer**: Ensures workflow graph integrity
-- **Audit Logger**: Persists execution events to database
-- **Queue Manager**: Handles job queuing and processing
+- **Worker Service**: Processes agent execution jobs from Redis/BullMQ
+- **Agent Engine**: Executes workflow DAGs and node orchestration
+- **Validation Layer**: Ensures workflow graph structure and node schema integrity
+- **Audit Logger**: Persists workflow and node telemetry to Supabase
+- **Queue Manager**: Handles job enqueueing, retries, and worker scheduling
 
 ### Data Flow
 
-1. Agent execution request → Redis queue
-2. Worker claims job → Validates workflow graph
-3. Executes nodes in topological order → Logs audit events
-4. Persists results → Updates execution status
+1. `Denbegaye Agent` posts an execution request to the API proxy
+2. Request is enqueued in Redis/BullMQ
+3. Worker instance claims the job and validates the graph
+4. Engine executes nodes in topological order and emits status events
+5. Results and audit logs are persisted, and real-time updates are streamed back to the UI
 
 ## 📦 Installation
 
@@ -70,6 +127,7 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 
 # Queue
 REDIS_URL=redis://localhost:6379
+BULL_QUEUE_NAME=denbegaye-agent-queue
 
 # Encryption
 ENCRYPTION_KEY=your-32-character-encryption-key
@@ -86,13 +144,6 @@ SMTP_USER=your-smtp-user
 SMTP_PASS=your-smtp-password
 SMTP_SECURE=false
 EMAIL_FROM=sender@example.com
-
-# Optional generic email service settings
-EMAIL_SERVICE_URL=smtp.example.com
-EMAIL_SERVICE_PORT=587
-EMAIL_SERVICE_SECURE=false
-EMAIL_SERVICE_USER=your-service-user
-EMAIL_SERVICE_API_KEY=your-service-api-key
 ```
 
 4. Build the project:
@@ -124,9 +175,9 @@ npm start
 
 This service supports role-based deployment so API and worker processes can scale independently.
 
-- `SERVICE_ROLE=api` - starts only the API/server process and enqueues jobs.
-- `SERVICE_ROLE=worker` - starts only the worker process that consumes jobs and executes workflows.
-- `SERVICE_ROLE=all` - starts both API and worker behavior in the same process.
+- `SERVICE_ROLE=api` - start the HTTP API process that enqueues jobs.
+- `SERVICE_ROLE=worker` - start the worker process that consumes jobs.
+- `SERVICE_ROLE=all` - run both API and worker behavior in one process.
 
 Recommended commands:
 
@@ -137,7 +188,7 @@ npm run start:api    # production API process
 npm run start:worker # production worker process
 ```
 
-For multi-instance deployments, set `REDIS_URL` and `BULL_QUEUE_NAME` so all instances share the same Redis queue and Socket.IO adapter.
+For multi-instance deployments, ensure all processes share the same `REDIS_URL` and `BULL_QUEUE_NAME`.
 
 ### Testing
 
@@ -146,6 +197,21 @@ Run the test suite:
 ```bash
 npm test
 ```
+
+## 📈 Scalability & Roadmap
+
+This worker is already structured for horizontal scaling, but production readiness requires additional infrastructure and observability.
+
+- **Current strengths**
+  - Dedicated queue-based job processing
+  - Role-separated deployment modes
+  - Audit logging with Supabase
+- **Recommended improvements**
+  - Redis clustering or managed Redis for high availability
+  - Worker autoscaling with metrics-based scaling rules
+  - Distributed Socket.IO adapter for cross-instance event broadcast
+  - Centralized tracing and metrics with OpenTelemetry or Prometheus
+  - Backpressure handling and queue prioritization for burst loads
 
 ## 📋 API Reference
 
