@@ -8,7 +8,11 @@ export const NODE_ENV = process.env.NODE_ENV || "development";
 export const SERVICE_ROLE = (process.env.SERVICE_ROLE || "all").toLowerCase();
 export const INSTANCE_ID =
   process.env.INSTANCE_ID || process.env.HOSTNAME || os.hostname();
-export const REDIS_URL = process.env.REDIS_URL || "";
+const configuredRedisUrl = process.env.REDIS_URL?.trim() || "";
+export const REDIS_URL = configuredRedisUrl.replace(
+  /^(?:"(.*)"|'(.*)')$/s,
+  "$1$2",
+);
 export const REDIS_CLUSTER_NODES = process.env.REDIS_CLUSTER_NODES || "";
 export const REDIS_PASSWORD = process.env.REDIS_PASSWORD || "";
 export const REDIS_TLS = process.env.REDIS_TLS === "true";
