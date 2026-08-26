@@ -1,6 +1,4 @@
-# Render deployment blueprint for Denbegaye Agent Workers
-# This file defines a production project and environment for the API,
-# worker, and Redis-compatible Key Value instance.
+# Render deployment blueprint for Denbegaye Agent Workers.
 
 envVarGroups:
   - name: denbegaye-shared-config
@@ -10,96 +8,86 @@ envVarGroups:
       - key: FRONTEND_URL
         value: "https://your-frontend-domain.com"
 
-projects:
-  - name: denbegaye-agent-workers
-    environments:
-      - name: production
-        envVarGroups:
-          - denbegaye-shared-config
-        services:
-          - type: web
-            name: denbegaye-agent-api
-            runtime: node
-            plan: starter
-            branch: main
-            buildCommand: npm install && npm run build
-            startCommand: npm run start:api
-            healthCheckPath: /health
-            autoDeployTrigger: commit
-            numInstances: 1
-            envVars:
-              - key: SERVICE_ROLE
-                value: api
-              - key: REDIS_URL
-                fromService:
-                  name: denbegaye-agent-redis
-                  type: keyvalue
-                  property: connectionString
-              - key: SUPABASE_URL
-                sync: false
-              - key: SUPABASE_SERVICE_ROLE_KEY
-                sync: false
-              - key: ENCRYPTION_KEY
-                sync: false
-              - key: OPENAI_API_KEY
-                sync: false
-              - key: GEMINI_API_KEY
-                sync: false
-              - key: DEEPSEEK_API_KEY
-                sync: false
-              - key: SMTP_HOST
-                sync: false
-              - key: SMTP_PORT
-                sync: false
-              - key: SMTP_USER
-                sync: false
-              - key: SMTP_PASS
-                sync: false
-              - key: EMAIL_FROM
-                sync: false
+services:
+  - type: web
+    name: denbegaye-agent-api
+    runtime: node
+    plan: starter
+    branch: main
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start:api
+    healthCheckPath: /health
+    envVars:
+      - fromGroup: denbegaye-shared-config
+      - key: SERVICE_ROLE
+        value: api
+      - key: REDIS_URL
+        fromService:
+          name: denbegaye-agent-redis
+          type: keyvalue
+          property: connectionString
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
 
-          - type: worker
-            name: denbegaye-agent-worker
-            runtime: node
-            plan: starter
-            branch: main
-            buildCommand: npm install && npm run build
-            startCommand: npm run start:worker
-            autoDeployTrigger: commit
-            numInstances: 1
-            envVars:
-              - key: SERVICE_ROLE
-                value: worker
-              - key: REDIS_URL
-                fromService:
-                  name: denbegaye-agent-redis
-                  type: keyvalue
-                  property: connectionString
-              - key: SUPABASE_URL
-                sync: false
-              - key: SUPABASE_SERVICE_ROLE_KEY
-                sync: false
-              - key: ENCRYPTION_KEY
-                sync: false
-              - key: OPENAI_API_KEY
-                sync: false
-              - key: GEMINI_API_KEY
-                sync: false
-              - key: DEEPSEEK_API_KEY
-                sync: false
-              - key: SMTP_HOST
-                sync: false
-              - key: SMTP_PORT
-                sync: false
-              - key: SMTP_USER
-                sync: false
-              - key: SMTP_PASS
-                sync: false
-              - key: EMAIL_FROM
-                sync: false
+  - type: worker
+    name: denbegaye-agent-worker
+    runtime: node
+    plan: starter
+    branch: main
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start:worker
+    envVars:
+      - fromGroup: denbegaye-shared-config
+      - key: SERVICE_ROLE
+        value: worker
+      - key: REDIS_URL
+        fromService:
+          name: denbegaye-agent-redis
+          type: keyvalue
+          property: connectionString
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
 
-          - type: keyvalue
-            name: denbegaye-agent-redis
-            plan: starter
-            # Render Key Value provides Redis-compatible connections.
-            # The API and worker services above reference it via REDIS_URL.
+  - type: keyvalue
+    name: denbegaye-agent-redis
+    plan: starter
