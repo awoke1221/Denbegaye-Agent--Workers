@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.agentRunHandler = void 0;
 const supabaseClient_1 = require("../utils/supabaseClient");
+const requestAuth_1 = require("../utils/requestAuth");
 const encryption_1 = require("../utils/encryption");
 const validation_1 = require("../utils/validation");
 const agentQueue_1 = require("../utils/agentQueue");
@@ -21,15 +22,9 @@ function isValidStatusTransition(currentStatus, newStatus) {
 }
 const agentRunHandler = async (req, res) => {
     try {
-        const authHeader = req.headers.authorization;
-        if (!authHeader?.startsWith("Bearer ")) {
-            return res.status(401).json({ error: "Unauthorized" });
-        }
-        const token = authHeader.substring(7);
-        // Verify the JWT token with Supabase
-        const { data: { user }, error, } = await supabaseClient_1.supabase.auth.getUser(token);
+        const { user, error } = await (0, requestAuth_1.getUserFromRequest)(req);
         if (error || !user) {
-            return res.status(401).json({ error: "Invalid token" });
+            return res.status(401).json({ error: "Invalid or missing token" });
         }
         const rateCheck = await (0, rateLimiting_1.checkRateLimit)(user.id, "api_calls");
         if (!rateCheck.allowed) {

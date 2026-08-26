@@ -43,11 +43,20 @@ class LangGraphNodeTool extends tools_1.StructuredTool {
                 const fallbackOutput = await this.executeFallback(input);
                 return JSON.stringify(fallbackOutput);
             }
+            // Extract the actual previous node output from the context object
+            // The 'input' parameter is the full context from executeNode() which contains:
+            // { nodeId, nodeType, config: resolvedConfig, input: previousOutput, previousOutputs, variables, apiKeys, ... }
+            const handlerInput = input?.input ?? input;
+            const resolvedConfig = input?.config ?? this.nodeConfig;
+            const previousOutputs = input?.previousOutputs;
+            const handlerVariables = input?.variables;
             const result = await nodeDefinition.handler({
                 nodeId: this.nodeId,
                 nodeType: this.nodeType,
-                config: this.nodeConfig,
-                input: input,
+                config: resolvedConfig,
+                input: handlerInput,
+                previousOutputs,
+                variables: handlerVariables,
                 apiKeys: this.apiKeys,
             });
             return JSON.stringify(result);

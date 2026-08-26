@@ -1,4 +1,4 @@
-import { initializeQueue } from "./index";
+import { initializeQueue } from "./queue";
 import { logger } from "./utils/logger";
 import { SERVICE_ROLE, INSTANCE_ID } from "./config";
 

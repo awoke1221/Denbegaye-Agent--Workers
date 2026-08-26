@@ -7,11 +7,12 @@ const redis_adapter_1 = require("@socket.io/redis-adapter");
 const redis_1 = require("redis");
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
+const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const helmet_1 = __importDefault(require("helmet"));
 const http_1 = require("http");
 const socket_io_1 = require("socket.io");
 const ioredis_1 = __importDefault(require("ioredis"));
-const index_1 = require("./index");
+const queue_1 = require("./queue");
 const logger_1 = require("./utils/logger");
 const socket_1 = require("./utils/socket");
 const routes_1 = require("./routes");
@@ -88,7 +89,12 @@ if (redisSubscriber) {
 const webhookHandler = new webhook_1.WebhookHandler(app);
 // Middleware
 app.use((0, helmet_1.default)());
-app.use((0, cors_1.default)());
+app.use((0, cors_1.default)({
+    origin: config_1.FRONTEND_URL,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+}));
+app.use((0, cookie_parser_1.default)());
 app.use(express_1.default.json({ limit: "10mb" }));
 app.use(express_1.default.urlencoded({ extended: true }));
 // Global IP-based rate limiter (Redis-backed). Skips health/metrics endpoints.
@@ -140,7 +146,7 @@ globalThis.webhookHandler = webhookHandler;
 // Setup API routes
 (0, routes_1.setupRoutes)(app, io);
 // Initialize queue worker
-(0, index_1.initializeQueue)().catch((error) => {
+(0, queue_1.initializeQueue)().catch((error) => {
     logger_1.logger.error("Queue initialization failed", {
         error: error instanceof Error ? error.message : String(error),
     });

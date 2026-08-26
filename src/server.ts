@@ -7,7 +7,7 @@ import helmet from "helmet";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import Redis from "ioredis";
-import { initializeQueue } from "./index";
+import { initializeQueue } from "./queue";
 import { logger } from "./utils/logger";
 import { emitSocketEvent } from "./utils/socket";
 import { setupRoutes } from "./routes";

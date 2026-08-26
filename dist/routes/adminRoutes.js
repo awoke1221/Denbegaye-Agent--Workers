@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.setupAdminRoutes = exports.adminOnly = void 0;
 const supabaseClient_1 = require("../utils/supabaseClient");
+const requestAuth_1 = require("../utils/requestAuth");
 const parseIdList = (value) => {
     if (!value)
         return [];
@@ -15,14 +16,9 @@ const parseIntOrDefault = (value, fallback) => {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 const adminOnly = async (req, res, next) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "Unauthorized" });
-    }
-    const token = authHeader.substring(7);
-    const { data: { user }, error, } = await supabaseClient_1.supabase.auth.getUser(token);
+    const { user, error } = await (0, requestAuth_1.getUserFromRequest)(req);
     if (error || !user) {
-        return res.status(401).json({ error: "Invalid token" });
+        return res.status(401).json({ error: "Invalid or missing token" });
     }
     const { data: profile, error: profileError } = await supabaseClient_1.supabase
         .from("profiles")
