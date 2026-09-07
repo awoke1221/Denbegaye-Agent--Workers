@@ -93,6 +93,7 @@ export class AdvancedWorkflowExecutor {
   ): Promise<WorkflowExecutionResult> {
     const startTime = Date.now();
     this.executionAborted = false;
+    this.context.edges = edges;
 
     try {
       // Initialize execution state
@@ -549,14 +550,18 @@ export class AdvancedWorkflowExecutor {
       let previousOutput: any = {};
       if (incomingEdges.length === 1) {
         const parentId = incomingEdges[0].source || incomingEdges[0].from;
-        previousOutput =
+        const parentOutput =
           variables[parentId]?.output || variables[parentId] || {};
+        previousOutput = {
+          ...parentOutput,
+          [parentId]: parentOutput,
+        };
       } else if (incomingEdges.length > 1) {
         previousOutput = incomingEdges.reduce((acc: any, edge: any) => {
           const parentId = edge.source || edge.from;
           const parentResult = variables[parentId];
           const parentOutput = parentResult?.output || parentResult || {};
-          return { ...acc, ...parentOutput };
+          return { ...acc, ...parentOutput, [parentId]: parentOutput };
         }, {});
       }
 

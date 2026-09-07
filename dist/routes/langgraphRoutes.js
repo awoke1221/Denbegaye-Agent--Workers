@@ -64,8 +64,8 @@ function createLangGraphRoutes(io) {
                     description: n.data?.description,
                 })),
                 edges: (0, validation_1.normalizeAgentEdges)(edges).map((e) => ({
-                    source: e.source,
-                    target: e.target,
+                    source: e.from,
+                    target: e.to,
                     condition: e.condition,
                 })),
                 apiKeys: apiKeys || {},

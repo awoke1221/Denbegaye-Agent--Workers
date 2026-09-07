@@ -98,8 +98,8 @@ export function createLangGraphRoutes(io: SocketIOServer): Router {
           description: n.data?.description,
         })),
         edges: normalizeAgentEdges(edges).map((e: any) => ({
-          source: e.source,
-          target: e.target,
+          source: e.from,
+          target: e.to,
           condition: e.condition,
         })),
         apiKeys: apiKeys || {},

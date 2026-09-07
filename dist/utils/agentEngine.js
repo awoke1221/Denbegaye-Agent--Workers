@@ -20,6 +20,7 @@ class AdvancedWorkflowExecutor {
     async executeWorkflow(nodes, edges, input, apiKeys, options) {
         const startTime = Date.now();
         this.executionAborted = false;
+        this.context.edges = edges;
         try {
             // Initialize execution state
             await this.initializeExecutionState(nodes, edges);
@@ -348,15 +349,18 @@ class AdvancedWorkflowExecutor {
             let previousOutput = {};
             if (incomingEdges.length === 1) {
                 const parentId = incomingEdges[0].source || incomingEdges[0].from;
-                previousOutput =
-                    variables[parentId]?.output || variables[parentId] || {};
+                const parentOutput = variables[parentId]?.output || variables[parentId] || {};
+                previousOutput = {
+                    ...parentOutput,
+                    [parentId]: parentOutput,
+                };
             }
             else if (incomingEdges.length > 1) {
                 previousOutput = incomingEdges.reduce((acc, edge) => {
                     const parentId = edge.source || edge.from;
                     const parentResult = variables[parentId];
                     const parentOutput = parentResult?.output || parentResult || {};
-                    return { ...acc, ...parentOutput };
+                    return { ...acc, ...parentOutput, [parentId]: parentOutput };
                 }, {});
             }
             // Interpolate {{variables}} and {{nodeId.field}} in config

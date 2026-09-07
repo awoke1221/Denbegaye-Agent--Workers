@@ -1,19 +1,5 @@
 **Quick Start: Advanced Workflow Execution**
 
-# 5-Minute Setup Guide
-
-## What's New?
-
-The system now provides **transaction-like semantics** for workflows, meaning:
-
-- ✅ Workflows won't show mixed success/failure states
-- ✅ Failed nodes automatically skip dependents
-- ✅ Transient failures are automatically retried
-- ✅ Partial success is properly tracked
-- ✅ You can recover failed executions
-
-## Installation
-
 ### 1. Database Updates (Required)
 
 Run these SQL statements in your Supabase dashboard:

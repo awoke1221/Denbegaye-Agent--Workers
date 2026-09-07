@@ -189,14 +189,36 @@ const evaluateExpression = (expression: any, context: any): any => {
 
   const sanitized = sanitizeExpression(expression);
   try {
-    const parser = new Parser();
-    const expr = parser.parse(sanitized);
-    return expr.evaluate({
+    const scopes = {
       input: context.input,
       variables: context.variables || {},
       previousOutputs: context.previousOutputs || {},
       config: context.config || {},
-    });
+    };
+    const resolvedExpression = sanitized.replace(
+      /\b(input|variables|previousOutputs|config)\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g,
+      (reference, scopeName, path) => {
+        const value = path
+          .split(".")
+          .reduce(
+            (current: any, key: string) => current?.[key],
+            scopes[scopeName as keyof typeof scopes],
+          );
+        return value === undefined ? reference : JSON.stringify(value);
+      },
+    );
+    const stringParts = resolvedExpression
+      .split("+")
+      .map((part) => part.trim());
+    if (
+      stringParts.length > 1 &&
+      stringParts.every((part) => /^"(?:[^"\\]|\\.)*"$/.test(part))
+    ) {
+      return stringParts.map((part) => JSON.parse(part) as string).join("");
+    }
+    const parser = new Parser();
+    const expr = parser.parse(resolvedExpression);
+    return expr.evaluate(scopes);
   } catch (error) {
     logger.warn("Expression evaluation failed", {
       expression: sanitized,
