@@ -164,7 +164,9 @@ const evaluateExpression = (expression, context) => {
                 .reduce((current, key) => current?.[key], scopes[scopeName]);
             return value === undefined ? reference : JSON.stringify(value);
         });
-        const stringParts = resolvedExpression.split("+").map((part) => part.trim());
+        const stringParts = resolvedExpression
+            .split("+")
+            .map((part) => part.trim());
         if (stringParts.length > 1 &&
             stringParts.every((part) => /^"(?:[^"\\]|\\.)*"$/.test(part))) {
             return stringParts.map((part) => JSON.parse(part)).join("");
@@ -1372,8 +1374,14 @@ const groqHandler = async (context) => {
     }
 };
 const geminiHandler = async (context) => {
-    const apiKey = context.config?.apiKey || context.apiKeys?.gemini;
-    const model = context.config?.model || "gemini-1.5-pro";
+    const apiKey = context.config?.apiKey ||
+        context.apiKeys?.gemini ||
+        context.apiKeys?.gemini_api_key ||
+        context.apiKeys?.GOOGLE_API_KEY ||
+        context.apiKeys?.GEMINI_API_KEY ||
+        process.env.GEMINI_API_KEY ||
+        process.env.GOOGLE_API_KEY;
+    const model = context.config?.model || "gemini-2.5-flash";
     const nodeType = context.nodeType || context.type || "ai-gemini";
     const prompt = context.config?.inputText ||
         context.config?.prompt ||

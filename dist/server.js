@@ -74,6 +74,9 @@ if (redisSubscriber) {
         try {
             const payload = JSON.parse(message);
             if (payload?.executionId) {
+                if (payload.event) {
+                    (0, socket_1.emitSocketEvent)(payload.event, payload, `execution:${payload.executionId}`);
+                }
                 (0, socket_1.emitSocketEvent)("execution:update", payload, `execution:${payload.executionId}`);
             }
         }

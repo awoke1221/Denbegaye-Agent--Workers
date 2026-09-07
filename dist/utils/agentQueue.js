@@ -501,7 +501,7 @@ async function processJobFunction(jobData, jobId) {
             started_at: new Date().toISOString(),
         });
         // Emit execution-started event to frontend
-        (0, socket_1.emitSocketEvent)("execution-started", { executionId }, `execution:${executionId}`);
+        emitExecutionUpdate(executionId, { event: "execution-started" });
         await supabaseClient_1.supabase
             .from("job_queue")
             .update({
@@ -599,7 +599,7 @@ async function processJobFunction(jobData, jobId) {
             onNodeStart: (nodeId) => {
                 logger_1.logger.debug("Node started", { executionId, nodeId });
                 // Emit node-started event to frontend
-                (0, socket_1.emitSocketEvent)("node-started", { executionId, nodeId }, `execution:${executionId}`);
+                emitExecutionUpdate(executionId, { event: "node-started", nodeId });
             },
             onNodeComplete: (nodeId, success, error) => {
                 logger_1.logger.debug("Node completed", {
@@ -609,7 +609,12 @@ async function processJobFunction(jobData, jobId) {
                     error,
                 });
                 // Emit node-completed event to frontend
-                (0, socket_1.emitSocketEvent)("node-completed", { executionId, nodeId, success, error }, `execution:${executionId}`);
+                emitExecutionUpdate(executionId, {
+                    event: "node-completed",
+                    nodeId,
+                    success,
+                    error,
+                });
             },
             onExecutionComplete: (result) => {
                 logger_1.logger.info("Workflow execution completed event", {
@@ -620,18 +625,25 @@ async function processJobFunction(jobData, jobId) {
                 });
                 const success = typeof result === "boolean" ? result : result?.success || false;
                 // Emit execution-completed event to frontend
-                (0, socket_1.emitSocketEvent)("execution-completed", {
-                    executionId,
+                emitExecutionUpdate(executionId, {
+                    event: "execution-completed",
                     success,
                     hasOutput: result?.hasOutput,
                     nodeStatusCount: result?.nodeStatusCount,
-                }, `execution:${executionId}`);
+                });
             },
             onCompensationStart: (nodeId) => {
-                (0, socket_1.emitSocketEvent)("compensation-started", { executionId, nodeId }, `execution:${executionId}`);
+                emitExecutionUpdate(executionId, {
+                    event: "compensation-started",
+                    nodeId,
+                });
             },
             onCompensationComplete: (nodeId, success) => {
-                (0, socket_1.emitSocketEvent)("compensation-completed", { executionId, nodeId, success }, `execution:${executionId}`);
+                emitExecutionUpdate(executionId, {
+                    event: "compensation-completed",
+                    nodeId,
+                    success,
+                });
             },
         });
         logger_1.logger.info("Workflow execution returned", {

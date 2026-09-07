@@ -1648,8 +1648,15 @@ const groqHandler = async (context: any) => {
 };
 
 const geminiHandler = async (context: any) => {
-  const apiKey = context.config?.apiKey || context.apiKeys?.gemini;
-  const model = context.config?.model || "gemini-1.5-pro";
+  const apiKey =
+    context.config?.apiKey ||
+    context.apiKeys?.gemini ||
+    context.apiKeys?.gemini_api_key ||
+    context.apiKeys?.GOOGLE_API_KEY ||
+    context.apiKeys?.GEMINI_API_KEY ||
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY;
+  const model = context.config?.model || "gemini-2.5-flash";
   const nodeType = context.nodeType || context.type || "ai-gemini";
   const prompt =
     context.config?.inputText ||

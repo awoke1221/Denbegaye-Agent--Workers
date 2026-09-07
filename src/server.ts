@@ -91,6 +91,13 @@ if (redisSubscriber) {
     try {
       const payload = JSON.parse(message);
       if (payload?.executionId) {
+        if (payload.event) {
+          emitSocketEvent(
+            payload.event,
+            payload,
+            `execution:${payload.executionId}`,
+          );
+        }
         emitSocketEvent(
           "execution:update",
           payload,

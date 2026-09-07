@@ -608,11 +608,7 @@ export async function processJobFunction(
       started_at: new Date().toISOString(),
     });
     // Emit execution-started event to frontend
-    emitSocketEvent(
-      "execution-started",
-      { executionId },
-      `execution:${executionId}`,
-    );
+    emitExecutionUpdate(executionId, { event: "execution-started" });
     await supabase
       .from("job_queue")
       .update({
@@ -728,11 +724,7 @@ export async function processJobFunction(
         onNodeStart: (nodeId) => {
           logger.debug("Node started", { executionId, nodeId });
           // Emit node-started event to frontend
-          emitSocketEvent(
-            "node-started",
-            { executionId, nodeId },
-            `execution:${executionId}`,
-          );
+          emitExecutionUpdate(executionId, { event: "node-started", nodeId });
         },
         onNodeComplete: (nodeId, success, error) => {
           logger.debug("Node completed", {
@@ -742,11 +734,12 @@ export async function processJobFunction(
             error,
           });
           // Emit node-completed event to frontend
-          emitSocketEvent(
-            "node-completed",
-            { executionId, nodeId, success, error },
-            `execution:${executionId}`,
-          );
+          emitExecutionUpdate(executionId, {
+            event: "node-completed",
+            nodeId,
+            success,
+            error,
+          });
         },
         onExecutionComplete: (result: any) => {
           logger.info("Workflow execution completed event", {
@@ -758,30 +751,25 @@ export async function processJobFunction(
           const success =
             typeof result === "boolean" ? result : result?.success || false;
           // Emit execution-completed event to frontend
-          emitSocketEvent(
-            "execution-completed",
-            {
-              executionId,
-              success,
-              hasOutput: result?.hasOutput,
-              nodeStatusCount: result?.nodeStatusCount,
-            },
-            `execution:${executionId}`,
-          );
+          emitExecutionUpdate(executionId, {
+            event: "execution-completed",
+            success,
+            hasOutput: result?.hasOutput,
+            nodeStatusCount: result?.nodeStatusCount,
+          });
         },
         onCompensationStart: (nodeId) => {
-          emitSocketEvent(
-            "compensation-started",
-            { executionId, nodeId },
-            `execution:${executionId}`,
-          );
+          emitExecutionUpdate(executionId, {
+            event: "compensation-started",
+            nodeId,
+          });
         },
         onCompensationComplete: (nodeId, success) => {
-          emitSocketEvent(
-            "compensation-completed",
-            { executionId, nodeId, success },
-            `execution:${executionId}`,
-          );
+          emitExecutionUpdate(executionId, {
+            event: "compensation-completed",
+            nodeId,
+            success,
+          });
         },
       },
     );
